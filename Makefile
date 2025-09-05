@@ -47,7 +47,7 @@ deps:
 	@echo "Dependencies installed"
 
 # Development build with race detection
-dev: 
+dev:
 	@echo "Building development version with race detection..."
 	@mkdir -p bin
 	go build -race -o bin/$(BINARY_NAME)-dev .

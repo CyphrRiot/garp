@@ -4,98 +4,102 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+	"time"
+
+	"golang.org/x/term"
 
 	"find-words/config"
 	"find-words/search"
 )
 
+// Color codes for terminal output
 const (
-	RED    = "\033[0;31m"
-	GREEN  = "\033[0;32m"
-	YELLOW = "\033[1;33m"
-	BLUE   = "\033[0;34m"
-	GRAY   = "\033[0;90m"
-	NC     = "\033[0m"
+	RED    = "\033[31m"
+	GREEN  = "\033[32m"
+	YELLOW = "\033[33m"
+	BLUE   = "\033[34m"
+	GRAY   = "\033[90m"
 	BOLD   = "\033[1m"
+	NC     = "\033[0m" // No Color
 )
 
-func main() {
-	// Check if ripgrep is available
-	if !isRipgrepAvailable() {
-		fmt.Printf("%sError: ripgrep (rg) is required but not installed%s\n", RED, NC)
-		fmt.Printf("%sInstall with: sudo pacman -S ripgrep%s\n", YELLOW, NC)
-		os.Exit(1)
+// getTerminalWidth returns the terminal width, defaulting to 80 if unable to detect
+func getTerminalWidth() int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return 80 // Default fallback width
 	}
-
-	// Parse command line arguments
-	args := parseArguments(os.Args[1:])
-	if args == nil {
-		showUsage()
-		os.Exit(1)
-	}
-
-	// Validate inputs
-	if len(args.SearchWords) == 0 {
-		fmt.Printf("%sError: No search words provided%s\n", RED, NC)
-		os.Exit(1)
-	}
-
-	// Build file types for ripgrep
-	fileTypes := config.BuildRipgrepFileTypes(args.IncludeCode)
-
-	// Show search information
-	showSearchInfo(args)
-
-	// Get file count estimate
-	fileCount, err := search.GetDocumentFileCount(fileTypes)
-	if err != nil {
-		fmt.Printf("%sWarning: Could not estimate file count: %v%s\n", YELLOW, err, NC)
-		fileCount = 0
-	}
-
-	if fileCount > 0 {
-		fmt.Printf("%sDocument files to search:%s %s%s%s\n", 
-			BOLD, NC, YELLOW, formatNumber(fileCount), NC)
-		fmt.Printf("%sEstimated time:%s %s%s%s\n", 
-			BOLD, NC, YELLOW, config.GetEstimatedSearchTime(fileCount), NC)
-	}
-	fmt.Println()
-
-	// Create and execute search
-	engine := search.NewSearchEngine(args.SearchWords, args.ExcludeWords, fileTypes, args.IncludeCode)
-	results, err := engine.Execute()
-	if err != nil {
-		fmt.Printf("%sError during search: %v%s\n", RED, err, NC)
-		os.Exit(1)
-	}
-
-	if len(results) == 0 {
-		fmt.Printf("%sNo matching files found.%s\n", YELLOW, NC)
-		return
-	}
-
-	// Display results
-	fmt.Printf("\n%s%sFound %s files containing all words:%s\n\n", 
-		BOLD, GREEN, formatNumber(len(results)), NC)
-
-	displayResults(results)
+	return width
 }
 
-// Arguments represents parsed command line arguments
+// createSeparator creates a separator line that fits the terminal width
+func createSeparator() string {
+	width := getTerminalWidth()
+	if width > 120 {
+		width = 120 // Maximum reasonable width
+	}
+	return strings.Repeat("━", width)
+}
+
+// Arguments holds parsed command line arguments
 type Arguments struct {
 	SearchWords  []string
 	ExcludeWords []string
 	IncludeCode  bool
 }
 
-// parseArguments parses command line arguments
-func parseArguments(args []string) *Arguments {
-	if len(args) == 0 {
-		return nil
+func main() {
+	// Parse arguments
+	args := parseArguments(os.Args[1:])
+
+	// Validate arguments
+	if len(args.SearchWords) == 0 {
+		showUsage()
+		os.Exit(1)
 	}
 
+	// Show search information
+	showSearchInfo(args)
+
+	// Create search engine with pure Go implementation
+	searchEngine := search.NewSearchEngine(
+		args.SearchWords,
+		args.ExcludeWords,
+		config.DocumentTypes,
+		config.CodeTypes,
+		args.IncludeCode,
+	)
+	defer searchEngine.Close()
+
+	// Execute the search
+	startTime := time.Now()
+	results, err := searchEngine.Execute()
+	if err != nil {
+		fmt.Printf("%sError: %v%s\n", RED, err, NC)
+		os.Exit(1)
+	}
+
+	totalTime := time.Since(startTime)
+
+	if len(results) == 0 {
+		fmt.Printf("\n%s🔍 No files found containing all search terms%s\n", YELLOW, NC)
+		fmt.Printf("Try:\n")
+		fmt.Printf("  • Using fewer search terms\n")
+		fmt.Printf("  • Removing exclude words (--not)\n")
+		fmt.Printf("  • Adding --code flag for programming files\n")
+		return
+	}
+
+	// Show interactive results
+	fmt.Printf("\n%s%s📋 Found %d files with matches%s\n", BOLD, GREEN, len(results), NC)
+	fmt.Printf("%s%s%s\n", GRAY, createSeparator(), NC)
+
+	showInteractiveResults(results, totalTime)
+}
+
+// parseArguments parses command line arguments
+func parseArguments(args []string) *Arguments {
 	result := &Arguments{
 		SearchWords:  make([]string, 0),
 		ExcludeWords: make([]string, 0),
@@ -110,6 +114,12 @@ func parseArguments(args []string) *Arguments {
 			result.IncludeCode = true
 		case "--not":
 			parsingExcludes = true
+		case "--help", "-h":
+			showUsage()
+			os.Exit(0)
+		case "--version", "-v":
+			showVersion()
+			os.Exit(0)
 		default:
 			if parsingExcludes {
 				result.ExcludeWords = append(result.ExcludeWords, arg)
@@ -122,9 +132,9 @@ func parseArguments(args []string) *Arguments {
 	return result
 }
 
-// showUsage displays the usage information
+// showUsage displays usage information
 func showUsage() {
-	fmt.Printf("%s%sfind-words%s - Multi-word file search tool (ripgrep-based)\n", BOLD, BLUE, NC)
+	fmt.Printf("%s%sfind-words%s - High-Performance Document Search Tool (Pure Go)\n", BOLD, BLUE, NC)
 	fmt.Println()
 	fmt.Printf("%sUSAGE:%s\n", BOLD, NC)
 	fmt.Printf("  find-words %sword1 word2 word3%s [...]\n", YELLOW, NC)
@@ -134,19 +144,33 @@ func showUsage() {
 	fmt.Printf("%sOPTIONS:%s\n", BOLD, NC)
 	fmt.Printf("  %s--code%s    Include programming/code files (.js, .py, .sql, etc.)\n", YELLOW, NC)
 	fmt.Printf("  %s--not%s     Exclude files containing the following words\n", RED, NC)
+	fmt.Printf("  %s--help%s    Show this help message\n", YELLOW, NC)
+	fmt.Printf("  %s--version%s Show version information\n", YELLOW, NC)
 	fmt.Println()
 	fmt.Printf("%sEXAMPLES:%s\n", BOLD, NC)
-	fmt.Printf("  find-words contract payment\n")
-	fmt.Printf("  find-words --code function database\n")
-	fmt.Printf("  find-words chris incentive --not test demo\n")
-	fmt.Printf("  find-words ethereum --not scam --not fake\n")
+	fmt.Printf("  find-words contract payment agreement\n")
+	fmt.Printf("  find-words --code function database --not test\n")
+	fmt.Printf("  find-words bitcoin ethereum --not scam --not demo\n")
 	fmt.Println()
+	fmt.Printf("%sPERFORMANCE:%s\n", BOLD, NC)
+	fmt.Printf("  • %s100%% Pure Go%s - No external dependencies\n", GREEN, NC)
+	fmt.Printf("  • %sParallel Processing%s - Multi-core CPU utilization\n", GREEN, NC)
+	fmt.Printf("  • %sMemory Optimized%s - Efficient for large file sets\n", GREEN, NC)
+	fmt.Printf("  • %sSmart Filtering%s - Advanced file type detection\n", GREEN, NC)
 }
 
-// showSearchInfo displays the search configuration
+// showVersion displays version information
+func showVersion() {
+	fmt.Printf("%sfind-words%s v2.0.0\n", BOLD, NC)
+	fmt.Printf("High-Performance Document Search Tool\n")
+	fmt.Printf("Pure Go Implementation - No Dependencies\n")
+	fmt.Printf("Copyright © 2024\n")
+}
+
+// showSearchInfo displays search configuration
 func showSearchInfo(args *Arguments) {
-	fmt.Printf("%s%s🔍 Multi-Word Search (ripgrep)%s\n", BOLD, BLUE, NC)
-	fmt.Printf("%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n", GRAY, NC)
+	fmt.Printf("%s%s🚀 High-Performance Multi-Word Search%s\n", BOLD, BLUE, NC)
+	fmt.Printf("%s%s%s\n", GRAY, createSeparator(), NC)
 
 	// Show search terms
 	quotedWords := make([]string, len(args.SearchWords))
@@ -163,87 +187,74 @@ func showSearchInfo(args *Arguments) {
 			quotedExcludes[i] = fmt.Sprintf("\"%s\"", word)
 		}
 		fmt.Printf("%sExcluding files with:%s %s%s%s\n", BOLD, NC, RED, strings.Join(quotedExcludes, " "), NC)
-		fmt.Printf("%sExclude count:%s %s%d%s\n", BOLD, NC, YELLOW, len(args.ExcludeWords), NC)
 	}
 
-	// Show mode
-	if args.IncludeCode {
-		fmt.Printf("%sMode:%s %sDOCUMENTS + CODE FILES%s\n", BOLD, NC, BLUE, NC)
-	} else {
-		fmt.Printf("%sMode:%s %sDOCUMENTS ONLY (use --code for programming files)%s\n", BOLD, NC, BLUE, NC)
-	}
+	// Show file type configuration
+	fileTypeDesc := config.GetFileTypeDescription(args.IncludeCode)
+	fmt.Printf("%sTarget files:%s %s%s%s\n", BOLD, NC, YELLOW, fileTypeDesc, NC)
+
+	// Show performance info
+	fmt.Printf("%sEngine:%s %sPure Go - Parallel Processing%s\n", BOLD, NC, GREEN, NC)
+	fmt.Printf("%sMemory usage:%s %sOptimized for large datasets%s\n", BOLD, NC, GREEN, NC)
+
 	fmt.Println()
 }
 
-// displayResults shows the search results with interactive paging
-func displayResults(results []search.SearchResult) {
+// showInteractiveResults displays search results with pagination
+func showInteractiveResults(results []search.SearchResult, searchTime time.Duration) {
 	reader := bufio.NewReader(os.Stdin)
 
 	for i, result := range results {
-		absPath := search.GetAbsolutePath(result.FilePath)
-		
-		fmt.Printf("%s📄 File %d/%d:%s %s%s%s\n", 
-			BOLD, i+1, len(results), NC, GREEN, absPath, NC)
-		fmt.Printf("    🔗 %sfile://%s%s\n", BLUE, absPath, NC)
+		// Clear screen and show header
+		fmt.Printf("\n%s📄 File %d/%d: %s%s\n", BLUE, i+1, len(results), result.FilePath, NC)
 
-		// Show file size warning for large files
-		if result.FileSize > 50*1024*1024 {
-			fmt.Printf("    %s⚠️  Large file (%s) - limiting search scope%s\n", 
-				YELLOW, search.FormatFileSize(result.FileSize), NC)
-		} else if result.FileSize > 10*1024*1024 {
-			fmt.Printf("    %s📊 Medium file (%s) - limiting search scope%s\n", 
-				YELLOW, search.FormatFileSize(result.FileSize), NC)
+		// Show file info
+		absolutePath := search.GetAbsolutePath(result.FilePath)
+		fmt.Printf("    %s🔗 file://%s%s\n", GRAY, absolutePath, NC)
+
+		if result.FileSize > 0 {
+			fmt.Printf("    %s📦 Size: %s%s\n", GRAY, search.FormatFileSize(result.FileSize), NC)
 		}
 
-		fmt.Printf("    📋 %sContent matches:%s\n", BOLD, NC)
-
-		// Show excerpts
-		if len(result.Excerpts) == 0 {
-			fmt.Printf("    %sNo readable excerpts found%s\n", GRAY, NC)
-		} else {
+		// Show content excerpts
+		if len(result.Excerpts) > 0 {
+			fmt.Printf("    %s📋 Content matches:%s\n", GRAY, NC)
 			for _, excerpt := range result.Excerpts {
-				if len(excerpt) > 0 {
-					fmt.Printf("    %s\n", excerpt)
+				// Indent and show excerpt
+				lines := strings.Split(excerpt, "\n")
+				for _, line := range lines {
+					if strings.TrimSpace(line) != "" {
+						fmt.Printf("    %s\n", line)
+					}
 				}
 			}
+		} else {
+			fmt.Printf("    %s📋 File contains all search terms%s\n", GRAY, NC)
 		}
 
-		fmt.Println()
-
-		// Interactive paging
+		// Show navigation prompt
+		fmt.Printf("\n%s[Press ENTER for next file", GRAY)
 		if i < len(results)-1 {
-			fmt.Printf("%s%s[Press ENTER for next file, 'q' + ENTER to quit]%s", BOLD, YELLOW, NC)
-			input, _ := reader.ReadString('\n')
-			input = strings.TrimSpace(input)
-			if input == "q" {
-				fmt.Printf("%sSearch stopped by user.%s\n", YELLOW, NC)
-				break
-			}
-			fmt.Println()
+			fmt.Printf(", 's' + ENTER to skip remaining")
+		}
+		fmt.Printf(", 'q' + ENTER to quit]%s ", NC)
+
+		// Read user input
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(strings.ToLower(input))
+
+		switch input {
+		case "q", "quit", "exit":
+			fmt.Printf("\n%s✨ Search session ended%s\n", YELLOW, NC)
+			return
+		case "s", "skip":
+			fmt.Printf("\n%s⏭️  Skipping remaining results%s\n", YELLOW, NC)
+			return
 		}
 	}
-}
 
-// isRipgrepAvailable checks if ripgrep is installed
-func isRipgrepAvailable() bool {
-	_, err := exec.LookPath("rg")
-	return err == nil
-}
-
-// formatNumber formats a number with thousands separators
-func formatNumber(n int) string {
-	str := fmt.Sprintf("%d", n)
-	if len(str) <= 3 {
-		return str
-	}
-
-	var result strings.Builder
-	for i, digit := range str {
-		if i > 0 && (len(str)-i)%3 == 0 {
-			result.WriteString(",")
-		}
-		result.WriteRune(digit)
-	}
-
-	return result.String()
+	// All results shown
+	fmt.Printf("\n%s✅ All results displayed%s\n", GREEN, NC)
+	fmt.Printf("%s📊 Search completed in %.2f seconds%s\n", GRAY, searchTime.Seconds(), NC)
+	fmt.Printf("%s🎉 Found %d matching files%s\n", GREEN, len(results), NC)
 }
