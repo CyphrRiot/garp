@@ -1,7 +1,6 @@
 package search
 
 import (
-	"bufio"
 	"fmt"
 	"regexp"
 	"strings"
@@ -53,67 +52,163 @@ func CleanContent(content string) string {
 
 // ExtractMeaningfulExcerpts extracts clean, readable excerpts around search terms
 func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts int) []string {
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	lines := make([]string, 0)
-	
-	// Read all lines
-	for scanner.Scan() {
-		line := scanner.Text()
-		lines = append(lines, line)
-	}
+	// Clean content first
+	cleaned := CleanContent(content)
 	
 	excerpts := make([]string, 0, maxExcerpts)
-	used := make(map[int]bool) // Track which lines we've already used
+	seenExcerpts := make(map[string]bool) // Track duplicates
 	
-	// Find lines containing search terms
-	for i, line := range lines {
-		if used[i] || len(excerpts) >= maxExcerpts {
+	// Find all positions where search terms appear
+	var matches []matchInfo
+	for _, term := range searchTerms {
+		pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(term))
+		regex := regexp.MustCompile(pattern)
+		
+		indexes := regex.FindAllStringIndex(cleaned, -1)
+		for _, idx := range indexes {
+			matches = append(matches, matchInfo{
+				start: idx[0],
+				end:   idx[1],
+				term:  term,
+			})
+		}
+	}
+	
+	// Extract context around each match
+	for _, match := range matches {
+		if len(excerpts) >= maxExcerpts {
+			break
+		}
+		
+		// Extract 100 characters before and after the match
+		start := max(0, match.start-100)
+		end := min(len(cleaned), match.end+100)
+		
+		// Find word boundaries to avoid cutting words
+		for start > 0 && cleaned[start] != ' ' && cleaned[start] != '\n' {
+			start--
+		}
+		for end < len(cleaned) && cleaned[end] != ' ' && cleaned[end] != '\n' {
+			end++
+		}
+		
+		excerpt := strings.TrimSpace(cleaned[start:end])
+		
+		// Skip if too short or duplicate
+		if len(excerpt) < 20 || seenExcerpts[excerpt] {
 			continue
 		}
 		
-		// Check if line contains any search term
-		hasSearchTerm := false
-		cleanLine := CleanContent(line)
+		// Clean up the excerpt
+		excerpt = strings.ReplaceAll(excerpt, "\n", " ")
+		excerpt = strings.ReplaceAll(excerpt, "\t", " ")
+		excerpt = regexp.MustCompile(`\s+`).ReplaceAllString(excerpt, " ")
 		
-		// Skip if line is too short or looks like junk
-		if len(cleanLine) < 15 || isJunkLine(cleanLine) {
-			continue
-		}
-		
-		// Check for search terms with word boundaries
-		for _, term := range searchTerms {
-			if containsWholeWord(cleanLine, term) {
-				hasSearchTerm = true
-				break
-			}
-		}
-		
-		if hasSearchTerm {
-			// Extract context (2 lines before and after)
-			start := max(0, i-2)
-			end := min(len(lines), i+3)
-			
-			contextLines := make([]string, 0)
-			for j := start; j < end; j++ {
-				if !used[j] {
-					contextLine := CleanContent(lines[j])
-					if len(contextLine) >= 10 && !isJunkLine(contextLine) {
-						contextLines = append(contextLines, contextLine)
-						used[j] = true
-					}
-				}
-			}
-			
-			if len(contextLines) > 0 {
-				excerpt := strings.Join(contextLines, " ")
-				if len(excerpt) > 30 { // Ensure meaningful content
-					excerpts = append(excerpts, excerpt)
-				}
-			}
+		// Ensure it has letters and contains at least one search term
+		if hasLetters(excerpt) && containsAnySearchTerm(excerpt, searchTerms) {
+			seenExcerpts[excerpt] = true
+			excerpts = append(excerpts, excerpt)
 		}
 	}
 	
 	return excerpts
+}
+
+// matchInfo represents a search term match location
+type matchInfo struct {
+	start int
+	end   int
+	term  string
+}
+
+// containsAnySearchTerm checks if text contains any of the search terms
+func containsAnySearchTerm(text string, searchTerms []string) bool {
+	for _, term := range searchTerms {
+		if containsWholeWord(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitIntoSentences splits content into sentences for better excerpt extraction
+func splitIntoSentences(content string) []string {
+	// Clean content first
+	cleaned := CleanContent(content)
+	
+	// Split by common sentence endings
+	sentences := regexp.MustCompile(`[.!?]+\s+`).Split(cleaned, -1)
+	
+	// If no sentence breaks, split by line breaks  
+	if len(sentences) == 1 {
+		sentences = strings.Split(cleaned, "\n")
+	}
+	
+	// If still one big chunk, split by double spaces or long phrases
+	if len(sentences) == 1 && len(cleaned) > 500 {
+		// Try splitting by double spaces or other natural breaks
+		if strings.Contains(cleaned, "  ") {
+			sentences = strings.Split(cleaned, "  ")
+		} else {
+			// Split into chunks of ~100 characters at word boundaries
+			sentences = chunkText(cleaned, 100)
+		}
+	}
+	
+	return sentences
+}
+
+// chunkText splits text into chunks at word boundaries
+func chunkText(text string, chunkSize int) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{text}
+	}
+	
+	var chunks []string
+	var currentChunk strings.Builder
+	
+	for _, word := range words {
+		if currentChunk.Len() + len(word) + 1 > chunkSize && currentChunk.Len() > 0 {
+			chunks = append(chunks, currentChunk.String())
+			currentChunk.Reset()
+		}
+		
+		if currentChunk.Len() > 0 {
+			currentChunk.WriteString(" ")
+		}
+		currentChunk.WriteString(word)
+	}
+	
+	if currentChunk.Len() > 0 {
+		chunks = append(chunks, currentChunk.String())
+	}
+	
+	return chunks
+}
+
+// isObviousJunk determines if a line is obviously just markup/noise - less strict than isJunkLine
+func isObviousJunk(line string) bool {
+	// Skip email headers
+	if emailHeaderRegex.MatchString(line) {
+		return true
+	}
+	
+	// Skip lines that are ONLY special characters  
+	if junkLineRegex.MatchString(line) {
+		return true
+	}
+	
+	// If line has at least some letters, keep it
+	letterCount := 0
+	for _, r := range line {
+		if unicode.IsLetter(r) {
+			letterCount++
+		}
+	}
+	
+	// Only reject if there are no letters at all
+	return letterCount == 0
 }
 
 // isJunkLine determines if a line is likely noise/markup
@@ -170,6 +265,16 @@ func HighlightTerms(text string, searchTerms []string) string {
 	}
 	
 	return result
+}
+
+// hasLetters checks if a string contains any letters
+func hasLetters(text string) bool {
+	for _, r := range text {
+		if unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // Helper functions

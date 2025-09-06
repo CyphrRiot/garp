@@ -1,8 +1,11 @@
 package search
 
 import (
+	"io"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 )
 
 // FileInfo represents information about a file
@@ -12,34 +15,96 @@ type FileInfo struct {
 }
 
 // GetDocumentFileCount returns the count of document files that will be searched
-func GetDocumentFileCount(documentTypes, codeTypes []string, includeCode bool) (int, error) {
-	walker := NewFileWalker(documentTypes, codeTypes, includeCode)
-	count, err := walker.CountFiles(".")
+func GetDocumentFileCount(fileTypes []string) (int, error) {
+	// Use ripgrep to count files recursively
+	args := []string{"--files", "--no-ignore", "--hidden"}
+	args = append(args, fileTypes...)
+	
+	cmd := exec.Command("rg", args...)
+	output, err := cmd.Output()
+	
+	// Ripgrep can exit with code 2 for permission errors, but still produce valid output
 	if err != nil {
-		return 0, err
+		// Check if we got any output despite the error
+		if len(output) == 0 {
+			return 0, nil
+		}
 	}
-	return int(count), nil
+	
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return 0, nil
+	}
+	
+	return len(lines), nil
 }
 
-// FindFilesWithFirstWord finds all files containing the first search word
-func FindFilesWithFirstWord(word string, documentTypes, codeTypes []string, includeCode bool) ([]string, error) {
-	walker := NewFileWalker(documentTypes, codeTypes, includeCode)
-
-	// Use parallel search to find files containing the word
-	files, err := walker.FindFilesWithPattern(".", word, 50000) // Reasonable limit
+// FindFilesWithFirstWord finds all files containing the first search word recursively
+func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
+	pattern := `\b` + word + `\b`
+	
+	// Use ripgrep for recursive search
+	args := []string{"-i", "-l", "--no-ignore", "--hidden"}
+	args = append(args, fileTypes...)
+	args = append(args, pattern)
+	
+	cmd := exec.Command("rg", args...)
+	output, err := cmd.Output()
+	
+	// Handle permission errors like in GetDocumentFileCount
 	if err != nil {
-		return nil, err
+		if len(output) == 0 {
+			return nil, nil
+		}
 	}
-
-	return files, nil
+	
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil, nil
+	}
+	
+	return lines, nil
 }
 
 // CheckFileContainsAllWords checks if a file contains all search words
 func CheckFileContainsAllWords(filePath string, words []string) (bool, error) {
-	matcher := NewWordMatcher(words, true) // case insensitive
-	defer matcher.Close()
-
-	return matcher.FileContainsWords(filePath, words), nil
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	
+	// Get file size for large file handling
+	stat, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	
+	var reader io.Reader = file
+	
+	// Limit read size for large files
+	if stat.Size() > 50*1024*1024 { // 50MB
+		reader = io.LimitReader(file, 10*1024*1024) // Read first 10MB
+	} else if stat.Size() > 10*1024*1024 { // 10MB
+		reader = io.LimitReader(file, 5*1024*1024) // Read first 5MB
+	}
+	
+	// Read content
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return false, err
+	}
+	
+	contentStr := strings.ToLower(string(content))
+	
+	// Check each word
+	for _, word := range words {
+		if !containsWholeWord(contentStr, strings.ToLower(word)) {
+			return false, nil
+		}
+	}
+	
+	return true, nil
 }
 
 // CheckFileContainsExcludeWords checks if a file contains any exclude words
@@ -47,17 +112,43 @@ func CheckFileContainsExcludeWords(filePath string, excludeWords []string) (bool
 	if len(excludeWords) == 0 {
 		return false, nil
 	}
-
-	matcher := NewWordMatcher(excludeWords, true) // case insensitive
-	defer matcher.Close()
-
-	// Returns true if ANY exclude word is found
+	
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	
+	// Get file size for large file handling
+	stat, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	
+	var reader io.Reader = file
+	
+	// Limit read size for large files
+	if stat.Size() > 50*1024*1024 { // 50MB
+		reader = io.LimitReader(file, 10*1024*1024) // Read first 10MB
+	} else if stat.Size() > 10*1024*1024 { // 10MB
+		reader = io.LimitReader(file, 5*1024*1024) // Read first 5MB
+	}
+	
+	// Read content
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return false, err
+	}
+	
+	contentStr := strings.ToLower(string(content))
+	
+	// Check each exclude word
 	for _, word := range excludeWords {
-		if matcher.FileContainsWords(filePath, []string{word}) {
+		if containsWholeWord(contentStr, strings.ToLower(word)) {
 			return true, nil
 		}
 	}
-
+	
 	return false, nil
 }
 
@@ -68,39 +159,29 @@ func GetFileContent(filePath string) (string, int64, error) {
 		return "", 0, err
 	}
 	defer file.Close()
-
+	
 	// Get file size
 	stat, err := file.Stat()
 	if err != nil {
 		return "", 0, err
 	}
-
-	fileSize := stat.Size()
-
-	// Use matcher to read content efficiently
-	matcher := NewWordMatcher([]string{}, true)
-	defer matcher.Close()
-
-	// For large files, we'll read a portion for excerpt extraction
-	maxReadSize := int64(10 * 1024 * 1024) // 10MB max for content extraction
-	if fileSize > maxReadSize {
-		// Read first portion of large files
-		buffer := make([]byte, maxReadSize)
-		n, err := file.Read(buffer)
-		if err != nil && n == 0 {
-			return "", fileSize, err
-		}
-		return string(buffer[:n]), fileSize, nil
+	
+	var reader io.Reader = file
+	
+	// Limit read size for large files
+	if stat.Size() > 50*1024*1024 { // 50MB
+		reader = io.LimitReader(file, 10*1024*1024) // Read first 10MB
+	} else if stat.Size() > 10*1024*1024 { // 10MB
+		reader = io.LimitReader(file, 5*1024*1024) // Read first 5MB
 	}
-
-	// Read entire smaller file
-	buffer := make([]byte, fileSize)
-	n, err := file.Read(buffer)
-	if err != nil && n == 0 {
-		return "", fileSize, err
+	
+	// Read content
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return "", 0, err
 	}
-
-	return string(buffer[:n]), fileSize, nil
+	
+	return string(content), stat.Size(), nil
 }
 
 // FormatFileSize formats file size in human readable format
@@ -115,9 +196,4 @@ func FormatFileSize(size int64) string {
 		exp++
 	}
 	return strconv.FormatFloat(float64(size)/float64(div), 'f', 1, 64) + " " + "KMGTPE"[exp:exp+1] + "B"
-}
-
-// getFileInfo is a helper function to get file information
-func getFileInfo(filePath string) (os.FileInfo, error) {
-	return os.Stat(filePath)
 }

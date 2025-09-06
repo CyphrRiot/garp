@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/term"
-
 	"find-words/config"
 	"find-words/search"
 )
@@ -24,22 +22,9 @@ const (
 	NC     = "\033[0m" // No Color
 )
 
-// getTerminalWidth returns the terminal width, defaulting to 80 if unable to detect
-func getTerminalWidth() int {
-	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || width <= 0 {
-		return 80 // Default fallback width
-	}
-	return width
-}
-
 // createSeparator creates a separator line that fits the terminal width
 func createSeparator() string {
-	width := getTerminalWidth()
-	if width > 120 {
-		width = 120 // Maximum reasonable width
-	}
-	return strings.Repeat("━", width)
+	return strings.Repeat("━", 80) // Fixed width for simplicity
 }
 
 // Arguments holds parsed command line arguments
@@ -62,15 +47,14 @@ func main() {
 	// Show search information
 	showSearchInfo(args)
 
-	// Create search engine with pure Go implementation
+	// Create search engine with simple implementation
+	fileTypes := config.BuildRipgrepFileTypes(args.IncludeCode)
 	searchEngine := search.NewSearchEngine(
 		args.SearchWords,
 		args.ExcludeWords,
-		config.DocumentTypes,
-		config.CodeTypes,
+		fileTypes,
 		args.IncludeCode,
 	)
-	defer searchEngine.Close()
 
 	// Execute the search
 	startTime := time.Now()
@@ -232,8 +216,8 @@ func showInteractiveResults(results []search.SearchResult, searchTime time.Durat
 			fmt.Printf("    %s📋 File contains all search terms%s\n", GRAY, NC)
 		}
 
-		// Show navigation prompt
-		fmt.Printf("\n%s[Press ENTER for next file", GRAY)
+		// Show navigation prompt with brighter color
+		fmt.Printf("\n%s%s[Press ENTER for next file", BOLD, YELLOW)
 		if i < len(results)-1 {
 			fmt.Printf(", 's' + ENTER to skip remaining")
 		}

@@ -149,6 +149,45 @@ func GetFileTypeDescription(includeCode bool) string {
 	return "document files"
 }
 
+// BuildRipgrepFileTypes creates ripgrep file type arguments  
+func BuildRipgrepFileTypes(includeCode bool) []string {
+	// Use glob patterns for ALL document types
+	types := []string{
+		// Text files
+		"-g", "*.txt", "-g", "*.md", "-g", "*.log", "-g", "*.rtf",
+		// HTML/Web files - all variants
+		"-g", "*.html", "-g", "*.htm", "-g", "*.xhtml", "-g", "*.shtml",
+		// XML/Data files  
+		"-g", "*.xml", "-g", "*.csv", "-g", "*.yaml", "-g", "*.yml",
+		// Config files
+		"-g", "*.cfg", "-g", "*.conf", "-g", "*.ini", 
+		// Email files  
+		"-g", "*.eml", "-g", "*.mbox", "-g", "*.msg",
+		// Office documents
+		"-g", "*.pdf", "-g", "*.doc", "-g", "*.docx", 
+		"-g", "*.xls", "-g", "*.xlsx", "-g", "*.ppt", "-g", "*.pptx",
+		// OpenOffice
+		"-g", "*.odt", "-g", "*.ods", "-g", "*.odp",
+		// Scripts
+		"-g", "*.sh", "-g", "*.bat", "-g", "*.cmd",
+		// Other text formats
+		"-g", "*.tex", "-g", "*.rst", "-g", "*.asciidoc",
+	}
+	
+	// Add code file patterns if requested
+	if includeCode {
+		codeGlobs := []string{
+			"-g", "*.js", "-g", "*.ts", "-g", "*.sql", "-g", "*.py", 
+			"-g", "*.php", "-g", "*.java", "-g", "*.cpp", "-g", "*.c", 
+			"-g", "*.json", "-g", "*.go", "-g", "*.rs", "-g", "*.rb",
+			"-g", "*.cs", "-g", "*.swift", "-g", "*.kt", "-g", "*.scala",
+		}
+		types = append(types, codeGlobs...)
+	}
+	
+	return types
+}
+
 // EstimateMemoryUsage provides memory usage estimate based on file count
 func EstimateMemoryUsage(fileCount int) string {
 	switch {
