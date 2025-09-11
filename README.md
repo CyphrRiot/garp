@@ -4,13 +4,10 @@
 
 ![Version](https://img.shields.io/badge/version-0.1-blue?labelColor=0052cc)
 ![License](https://img.shields.io/github/license/CyphrRiot/garp?color=4338ca&labelColor=3730a3)
-![Downloads](https://img.shields.io/github/downloads/CyphrRiot/garp/total?color=16a34a&labelColor=14532d)
-
 ![Platform](https://img.shields.io/badge/platform-linux-4338ca?logo=linux&logoColor=white&labelColor=3730a3)
+
 ![Last Commit](https://img.shields.io/github/last-commit/CyphrRiot/garp?color=5b21b6&labelColor=4c1d95)
 ![Code Size](https://img.shields.io/github/languages/code-size/CyphrRiot/garp?color=4338ca&labelColor=3730a3)
-
-![Releases](https://img.shields.io/github/v/release/CyphrRiot/garp?color=22c55e&labelColor=14532d)
 ![Language](https://img.shields.io/badge/language-Go-4338ca?logo=go&logoColor=c7d2fe&labelColor=3730a3)
 ![Build](https://img.shields.io/badge/build-makefile-4c1d95?labelColor=1e1b4b)
 

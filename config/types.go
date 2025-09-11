@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 )
 
@@ -23,10 +24,8 @@ var CodeTypes = []string{
 // IsDocumentFile checks if a file extension is a document type
 func IsDocumentFile(filename string) bool {
 	ext := strings.ToLower(strings.TrimPrefix(getFileExtension(filename), "."))
-	for _, docType := range DocumentTypes {
-		if ext == docType {
-			return true
-		}
+	if slices.Contains(DocumentTypes, ext) {
+		return true
 	}
 	return false
 }
@@ -34,10 +33,8 @@ func IsDocumentFile(filename string) bool {
 // IsCodeFile checks if a file extension is a code type
 func IsCodeFile(filename string) bool {
 	ext := strings.ToLower(strings.TrimPrefix(getFileExtension(filename), "."))
-	for _, codeType := range CodeTypes {
-		if ext == codeType {
-			return true
-		}
+	if slices.Contains(CodeTypes, ext) {
+		return true
 	}
 	return false
 }
