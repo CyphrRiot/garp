@@ -1,5 +1,7 @@
+# never add the plan.md
+plan.md
+
 # Binaries
-bin/
 *.exe
 *.exe~
 *.dll

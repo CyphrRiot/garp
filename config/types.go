@@ -7,7 +7,7 @@ import (
 // DocumentTypes defines the file extensions for document files
 var DocumentTypes = []string{
 	"txt", "md", "html", "xml", "csv", "yaml", "yml",
-	"eml", "mbox", "msg", "pdf",
+	"eml", "mbox", "msg",
 	"doc", "docx", "xls", "xlsx", "ppt", "pptx",
 	"odt", "ods", "odp", "rtf",
 	"log", "cfg", "conf", "ini", "sh", "bat",
@@ -144,12 +144,12 @@ func ShouldSkipDirectory(dirName string) bool {
 // GetFileTypeDescription returns a human-readable description of file types
 func GetFileTypeDescription(includeCode bool) string {
 	if includeCode {
-		return "documents and code files"
+		return "documents (txt, md, html, xml, csv, yaml, yml, eml, mbox, msg, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, rtf, log, cfg, conf, ini, sh, bat) + code files (go, js, ts, py, php, java, cpp, c, json, rs, rb, cs, swift, kt, scala)"
 	}
-	return "document files"
+	return "documents (txt, md, html, xml, csv, yaml, yml, eml, mbox, msg, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, rtf, log, cfg, conf, ini, sh, bat)"
 }
 
-// BuildRipgrepFileTypes creates ripgrep file type arguments  
+// BuildRipgrepFileTypes creates ripgrep file type arguments
 func BuildRipgrepFileTypes(includeCode bool) []string {
 	// Use glob patterns for ALL document types
 	types := []string{
@@ -157,14 +157,14 @@ func BuildRipgrepFileTypes(includeCode bool) []string {
 		"-g", "*.txt", "-g", "*.md", "-g", "*.log", "-g", "*.rtf",
 		// HTML/Web files - all variants
 		"-g", "*.html", "-g", "*.htm", "-g", "*.xhtml", "-g", "*.shtml",
-		// XML/Data files  
+		// XML/Data files
 		"-g", "*.xml", "-g", "*.csv", "-g", "*.yaml", "-g", "*.yml",
 		// Config files
-		"-g", "*.cfg", "-g", "*.conf", "-g", "*.ini", 
-		// Email files  
+		"-g", "*.cfg", "-g", "*.conf", "-g", "*.ini",
+		// Email files
 		"-g", "*.eml", "-g", "*.mbox", "-g", "*.msg",
 		// Office documents
-		"-g", "*.pdf", "-g", "*.doc", "-g", "*.docx", 
+		"-g", "*.doc", "-g", "*.docx",
 		"-g", "*.xls", "-g", "*.xlsx", "-g", "*.ppt", "-g", "*.pptx",
 		// OpenOffice
 		"-g", "*.odt", "-g", "*.ods", "-g", "*.odp",
@@ -173,18 +173,18 @@ func BuildRipgrepFileTypes(includeCode bool) []string {
 		// Other text formats
 		"-g", "*.tex", "-g", "*.rst", "-g", "*.asciidoc",
 	}
-	
+
 	// Add code file patterns if requested
 	if includeCode {
 		codeGlobs := []string{
-			"-g", "*.js", "-g", "*.ts", "-g", "*.sql", "-g", "*.py", 
-			"-g", "*.php", "-g", "*.java", "-g", "*.cpp", "-g", "*.c", 
+			"-g", "*.js", "-g", "*.ts", "-g", "*.sql", "-g", "*.py",
+			"-g", "*.php", "-g", "*.java", "-g", "*.cpp", "-g", "*.c",
 			"-g", "*.json", "-g", "*.go", "-g", "*.rs", "-g", "*.rb",
 			"-g", "*.cs", "-g", "*.swift", "-g", "*.kt", "-g", "*.scala",
 		}
 		types = append(types, codeGlobs...)
 	}
-	
+
 	return types
 }
 

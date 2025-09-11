@@ -1,101 +1,601 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/sys/unix"
 
 	"find-words/config"
 	"find-words/search"
 )
 
-// Color codes for terminal output
-const (
-	RED    = "\033[31m"
-	GREEN  = "\033[32m"
-	YELLOW = "\033[33m"
-	BLUE   = "\033[34m"
-	GRAY   = "\033[90m"
-	BOLD   = "\033[1m"
-	NC     = "\033[0m" // No Color
-)
+// Embedded version (overridden via -ldflags "-X main.version=X.Y")
+var version = "0.1"
+var startWall time.Time
 
-// createSeparator creates a separator line that fits the terminal width
-func createSeparator() string {
-	return strings.Repeat("━", 80) // Fixed width for simplicity
+// Global progress streaming
+var progressChan = make(chan progressMsg, 256)
+
+// Bubbletea model for garp UI
+type model struct {
+	// Results and paging
+	results     []search.SearchResult
+	currentPage int
+	pageSize    int
+	totalPages  int
+
+	// Session and timing
+	searchTime time.Duration
+	quitting   bool
+	loading    bool
+
+	// Window size
+	width  int
+	height int
+
+	// Search parameters
+	searchWords  []string
+	excludeWords []string
+	includeCode  bool
+
+	// UI state
+	confirmSelected string // "yes" or "no"
+	memUsageText    string // " • RAM: XXX MB • CPU: YY%"
+
+	// Background progress (optional)
+	progressText string // e.g., "⏳ Processing..."
 }
 
-// Arguments holds parsed command line arguments
+// Styles
+var (
+	appStyle = lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("39"))
+
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("39")).
+			Align(lipgloss.Center)
+
+	subHeaderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("86")).
+			Bold(true)
+
+	infoStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("246"))
+
+	successStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("42")).
+			Bold(true)
+
+	warningStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+
+	errorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Bold(true)
+
+	separatorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
+)
+
+// Messages
+type searchResultMsg struct {
+	results    []search.SearchResult
+	searchTime time.Duration
+}
+
+type memUsageMsg struct {
+	Text string // " • RAM: XXX MB • CPU: YY%"
+}
+
+// progressMsg updates the top progress line while loading.
+// Format in View: "⏳ Processing [num/total]: filename"
+type progressMsg struct {
+	Count int
+	Total int
+	Path  string
+}
+
+// Init: run search in background and start header RAM/CPU ticker
+func (m model) Init() tea.Cmd {
+	return tea.Batch(
+		m.runSearch(),
+		m.memUsageTick(),
+		pollProgress(),
+	)
+}
+
+// Background search command
+func (m model) runSearch() tea.Cmd {
+	// Prepare engine and wire progress callback
+	fileTypes := config.BuildRipgrepFileTypes(m.includeCode)
+	se := search.NewSearchEngine(
+		m.searchWords,
+		m.excludeWords,
+		fileTypes,
+		m.includeCode,
+	)
+	se.Silent = true
+	// Stream progress from the engine to the TUI header
+	se.OnProgress = func(processed, total int, path string) {
+		select {
+		case progressChan <- progressMsg{Count: processed, Total: total, Path: path}:
+		default:
+		}
+	}
+
+	total, _ := search.GetDocumentFileCount(fileTypes)
+
+	// Emit initial progress and then run the search
+	return tea.Batch(
+		func() tea.Msg { return progressMsg{Count: 0, Total: total, Path: ""} },
+		func() tea.Msg {
+			start := time.Now()
+			results, _ := se.Execute()
+			return searchResultMsg{
+				results:    results,
+				searchTime: time.Since(start),
+			}
+		},
+	)
+}
+
+// Update: handle results, keys, window size, and ticks
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case searchResultMsg:
+		m.results = msg.results
+		m.searchTime = msg.searchTime
+		m.loading = false
+		if len(m.results) > 0 {
+			m.totalPages = (len(m.results) + m.pageSize - 1) / m.pageSize
+		}
+		return m, nil
+
+	case memUsageMsg:
+		m.memUsageText = msg.Text
+		return m, m.memUsageTick()
+
+	case progressMsg:
+		// Update the top progress line (only shown while loading)
+		m.progressText = fmt.Sprintf("[%d/%d]: %s", msg.Count, msg.Total, msg.Path)
+		// Keep polling progress while loading
+		return m, pollProgress()
+
+	case tea.KeyMsg:
+		// While loading, only allow quit
+		if m.loading {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			default:
+				return m, nil
+			}
+		}
+
+		switch msg.String() {
+		case "q", "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+
+		// Selection navigation for highlighted buttons
+		case "left", "h":
+			m.confirmSelected = "yes"
+			return m, nil
+		case "right", "l":
+			m.confirmSelected = "no"
+			return m, nil
+
+		case "enter":
+			if m.confirmSelected == "no" {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			// default/"yes": advance or quit if at end
+			if m.currentPage < m.totalPages-1 {
+				m.currentPage++
+				return m, nil
+			}
+			m.quitting = true
+			return m, tea.Quit
+
+		// Legacy keys
+		case "y", "space":
+			if m.currentPage < m.totalPages-1 {
+				m.currentPage++
+				return m, nil
+			}
+			m.quitting = true
+			return m, tea.Quit
+		case "n":
+			m.quitting = true
+			return m, tea.Quit
+		case "p":
+			if m.currentPage > 0 {
+				m.currentPage--
+			}
+			return m, nil
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// View: header (logo + info), single bordered box (clipped), bottom status + footer
+func (m model) View() string {
+	if m.quitting {
+		return successStyle.Render("✨ Search session ended")
+	}
+
+	// Defaults for size
+	width := m.width
+	if width <= 0 {
+		width = 120
+	}
+	height := m.height
+	if height <= 0 {
+		height = 30
+	}
+
+	// ASCII Logo with version on second line; pad top line to align
+	logoTop := " █▀▀ ▄▀█ █▀█ █▀█"
+	logoBottom := fmt.Sprintf(" █▄█ █▀█ █▀▄ █▀▀  v%s", version)
+	if len(logoTop) < len(logoBottom) {
+		logoTop += strings.Repeat(" ", len(logoBottom)-len(logoTop))
+	}
+	logo := logoTop + "\n" + logoBottom
+	logo = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Align(lipgloss.Center).Render(logo)
+
+	// Build header info
+	var headerLines []string
+	headerLines = append(headerLines, "")
+	headerLines = append(headerLines, logo)
+	headerLines = append(headerLines, "")
+
+	// Searching for
+	headerLines = append(headerLines, subHeaderStyle.Render("🔍 Searching for: "+renderSearchTerms(m.searchWords)))
+
+	// Match count at the top (when available)
+	if !m.loading && len(m.results) > 0 {
+		headerLines = append(headerLines, successStyle.Render(fmt.Sprintf("📋 Match %d of %d files", m.currentPage+1, len(m.results))))
+	}
+
+	// Target line (explicit ext list, PDFs disabled note) — use a different color to stand out
+	targetPrefix := "📁 Target: "
+	targetDesc := config.GetFileTypeDescription(m.includeCode) + " (PDFs disabled)"
+	targetStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("75")) // teal/cyan
+	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc, width-4)))
+
+	// Engine line with cores + RAM/CPU live — use a distinct color
+	engine := fmt.Sprintf("⚙️ Engine: Parallel Processing (%d Cores)%s", runtime.NumCPU(), m.memUsageText)
+	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("178")) // amber/gold
+	headerLines = append(headerLines, engineStyled.Render(engine))
+
+	// Default selection to Yes
+	if m.confirmSelected == "" {
+		m.confirmSelected = "yes"
+	}
+
+	searchInfo := lipgloss.JoinVertical(lipgloss.Left, headerLines...)
+
+	// Build box content (loading or results)
+	var boxContent string
+	if m.loading {
+		// Show progress above the box; keep the box empty while loading
+		boxContent = ""
+	} else {
+		// Results view
+		var resultsContent strings.Builder
+
+		if len(m.results) == 0 {
+			resultsContent.WriteString(warningStyle.Render("🔍 No files found containing all search terms"))
+		} else {
+			start := m.currentPage * m.pageSize
+			end := start + m.pageSize
+			if end > len(m.results) {
+				end = len(m.results)
+			}
+
+			for i := start; i < end; i++ {
+				res := m.results[i]
+
+				// Current file indicator inside the box (single concise header)
+				fileHdr := fmt.Sprintf("📄 %d/%d", i+1, len(m.results))
+				resultsContent.WriteString(successStyle.Render(fileHdr) + "\n")
+
+				// Path and size
+				abs := search.GetAbsolutePath(res.FilePath)
+				resultsContent.WriteString(infoStyle.Render(wrapTextWithIndent("🔗 ", abs, width-4)) + "\n")
+				if res.FileSize > 0 {
+					resultsContent.WriteString(infoStyle.Render(fmt.Sprintf("📦 Size: %s", search.FormatFileSize(res.FileSize))) + "\n")
+				}
+
+				// Content matches (always show header)
+				resultsContent.WriteString(infoStyle.Render("📋 Content matches:") + "\n")
+				if len(res.Excerpts) > 0 {
+					for _, ex := range res.Excerpts {
+						resultsContent.WriteString(wrapTextWithIndent("", ex, width-4) + "\n")
+					}
+				} else {
+					// No excerpts provided by the engine for this file
+					resultsContent.WriteString(infoStyle.Render("  (no excerpt provided)") + "\n")
+				}
+				resultsContent.WriteString("\n")
+			}
+
+			footer := fmt.Sprintf("📊 Search completed in %.2f seconds", m.searchTime.Seconds())
+			resultsContent.WriteString(infoStyle.Render(footer))
+		}
+
+		boxContent = resultsContent.String()
+	}
+
+	// Non-scrolling bottom status (found count + buttons)
+	var bottomStatus string
+	if !m.loading {
+		if len(m.results) > 0 {
+			// Move found count to header (already shown as Match X of Y), so omit here
+			// Add an extra spacer line before the buttons for better visual separation
+			space := ""
+			// Inline highlighted buttons (no border boxes), similar to Migrate
+			yesSel := lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("0")).
+				Background(lipgloss.Color("42")).
+				Padding(0, 1)
+			yesUn := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("42")).
+				Padding(0, 1)
+			noSel := lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("0")).
+				Background(lipgloss.Color("240")).
+				Padding(0, 1)
+			noUn := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240")).
+				Padding(0, 1)
+
+			var yesBtn, noBtn string
+			if m.confirmSelected == "no" {
+				yesBtn = yesUn.Render("[ Yes ]")
+				noBtn = noSel.Render("[ No ]")
+			} else {
+				yesBtn = yesSel.Render("[ Yes ]")
+				noBtn = noUn.Render("[ No ]")
+			}
+
+			cont := infoStyle.Render("Continue? ") + yesBtn + "    " + noBtn
+			bottomStatus = lipgloss.JoinVertical(lipgloss.Left, space, cont)
+		}
+	}
+
+	// Footer line
+	quitInstruction := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Align(lipgloss.Center).
+		Render("🔚 PRESS 'q' TO QUIT  •  p: previous  •  n: next")
+
+	// Compute dynamic content height for the box (account for header + bottom + footer)
+	headerHeight := strings.Count(searchInfo, "\n") + 1
+
+	// Account for top progress line while loading
+	topStatusHeight := 0
+	if m.loading {
+		topStatusHeight = 1
+	}
+
+	bottomStatusHeight := 0
+	if bottomStatus != "" {
+		bottomStatusHeight = strings.Count(bottomStatus, "\n") + 1
+	}
+	footerHeight := strings.Count(quitInstruction, "\n") + 2 // +1 blank after footer
+	boxHeight := height - headerHeight - topStatusHeight - bottomStatusHeight - footerHeight
+	if boxHeight < 8 {
+		boxHeight = 8
+	}
+
+	// appStyle adds 1-row padding top+bottom and 1-row border top+bottom => chrome = 4
+	chrome := 4
+	contentHeight := boxHeight - chrome
+	if contentHeight < 3 {
+		contentHeight = 3
+	}
+
+	// Assemble the full view (exactly one bordered box)
+	var parts []string
+	parts = append(parts, searchInfo)
+
+	// Top progress line while loading (above the box) — use a vivid green to distinguish progress
+	if m.loading {
+		txt := "⏳ Processing"
+		if m.progressText != "" {
+			// Expect m.progressText formatted as "[num/total]: filename"
+			txt = fmt.Sprintf("⏳ Processing %s", m.progressText)
+		}
+		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("46")) // bright green
+		parts = append(parts, progressStyled.Render(txt))
+	}
+
+	parts = append(parts, appStyle.Width(width-4).Height(contentHeight).Render(clipLines(boxContent, contentHeight)))
+	if bottomStatus != "" {
+		parts = append(parts, bottomStatus)
+	}
+	parts = append(parts, "", quitInstruction, "")
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// Helper: render search terms "quoted"
+func renderSearchTerms(words []string) string {
+	quoted := make([]string, len(words))
+	for i, w := range words {
+		quoted[i] = fmt.Sprintf("\"%s\"", w)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// Helper: clip content to at most max lines
+func clipLines(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= max {
+		return s
+	}
+	return strings.Join(lines[:max], "\n")
+}
+
+// Helper: wrap text so continuation lines are indented to align after a prefix
+func wrapTextWithIndent(prefix, text string, totalWidth int) string {
+	if totalWidth <= 0 {
+		totalWidth = 80
+	}
+	prefixWidth := runeLen(prefix)
+	contentWidth := totalWidth - prefixWidth
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return prefix
+	}
+
+	var b strings.Builder
+	b.WriteString(prefix)
+	cur := 0
+	for i, w := range words {
+		wlen := runeLen(w)
+		if cur == 0 {
+			b.WriteString(w)
+			cur = wlen
+		} else {
+			if cur+1+wlen <= contentWidth {
+				b.WriteString(" ")
+				b.WriteString(w)
+				cur += 1 + wlen
+			} else {
+				b.WriteString("\n")
+				// One extra space for nicer alignment under prefix
+				b.WriteString(strings.Repeat(" ", prefixWidth+1))
+				b.WriteString(w)
+				cur = wlen
+			}
+		}
+		if i == len(words)-1 {
+			break
+		}
+	}
+	return b.String()
+}
+
+func runeLen(s string) int { return len([]rune(s)) }
+
+// Mem/CPU ticker
+func (m model) memUsageTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		// RAM
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		memText := fmt.Sprintf(" • RAM: %.0f MB", float64(ms.Alloc)/(1024*1024))
+
+		// CPU (user+sys vs wall) per core
+		now := time.Now()
+		var ru unix.Rusage
+		cpuText := ""
+		if err := unix.Getrusage(unix.RUSAGE_SELF, &ru); err == nil {
+			user := time.Duration(ru.Utime.Sec)*time.Second + time.Duration(ru.Utime.Usec)*time.Microsecond
+			sys := time.Duration(ru.Stime.Sec)*time.Second + time.Duration(ru.Stime.Usec)*time.Microsecond
+			// Keep static package-level prev values
+			pct := sampleCPUPercent(now, user+sys, runtime.NumCPU())
+			if pct >= 0 {
+				cpuText = fmt.Sprintf(" • CPU: %.0f%%", pct)
+			}
+		}
+		return memUsageMsg{Text: memText + cpuText}
+	})
+}
+
+// Poll next progress message from the global channel
+func pollProgress() tea.Cmd {
+	return func() tea.Msg {
+		if progressChan == nil {
+			return progressMsg{Count: 0, Total: 0, Path: ""}
+		}
+		msg, ok := <-progressChan
+		if !ok {
+			return progressMsg{Count: 0, Total: 0, Path: ""}
+		}
+		return msg
+	}
+}
+
+// CPU sampling state
+var (
+	lastCPUWall   time.Time
+	lastCPUProc   time.Duration
+	haveCPUSample bool
+)
+
+func sampleCPUPercent(now time.Time, proc time.Duration, cores int) float64 {
+	if cores <= 0 {
+		cores = 1
+	}
+	if !haveCPUSample {
+		lastCPUWall = now
+		lastCPUProc = proc
+		haveCPUSample = true
+		return -1
+	}
+	dproc := proc - lastCPUProc
+	dwall := now.Sub(lastCPUWall)
+	lastCPUProc = proc
+	lastCPUWall = now
+	if dwall <= 0 {
+		return -1
+	}
+	pct := float64(dproc) / float64(dwall) / float64(cores) * 100.0
+	if pct < 0 {
+		pct = 0
+	}
+	return pct
+}
+
+// Arguments for CLI flags (used to seed TUI)
 type Arguments struct {
 	SearchWords  []string
 	ExcludeWords []string
 	IncludeCode  bool
 }
 
-func main() {
-	// Parse arguments
-	args := parseArguments(os.Args[1:])
-
-	// Validate arguments
-	if len(args.SearchWords) == 0 {
-		showUsage()
-		os.Exit(1)
-	}
-
-	// Show search information
-	showSearchInfo(args)
-
-	// Create search engine with simple implementation
-	fileTypes := config.BuildRipgrepFileTypes(args.IncludeCode)
-	searchEngine := search.NewSearchEngine(
-		args.SearchWords,
-		args.ExcludeWords,
-		fileTypes,
-		args.IncludeCode,
-	)
-
-	// Execute the search
-	startTime := time.Now()
-	results, err := searchEngine.Execute()
-	if err != nil {
-		fmt.Printf("%sError: %v%s\n", RED, err, NC)
-		os.Exit(1)
-	}
-
-	totalTime := time.Since(startTime)
-
-	if len(results) == 0 {
-		fmt.Printf("\n%s🔍 No files found containing all search terms%s\n", YELLOW, NC)
-		fmt.Printf("Try:\n")
-		fmt.Printf("  • Using fewer search terms\n")
-		fmt.Printf("  • Removing exclude words (--not)\n")
-		fmt.Printf("  • Adding --code flag for programming files\n")
-		return
-	}
-
-	// Show interactive results
-	fmt.Printf("\n%s%s📋 Found %d files with matches%s\n", BOLD, GREEN, len(results), NC)
-	fmt.Printf("%s%s%s\n", GRAY, createSeparator(), NC)
-
-	showInteractiveResults(results, totalTime)
-}
-
-// parseArguments parses command line arguments
+// parseArguments parses command line args
 func parseArguments(args []string) *Arguments {
-	result := &Arguments{
-		SearchWords:  make([]string, 0),
-		ExcludeWords: make([]string, 0),
+	res := &Arguments{
+		SearchWords:  []string{},
+		ExcludeWords: []string{},
 		IncludeCode:  false,
 	}
 
 	parsingExcludes := false
-
-	for _, arg := range args {
-		switch arg {
+	for _, a := range args {
+		switch a {
 		case "--code":
-			result.IncludeCode = true
+			res.IncludeCode = true
 		case "--not":
 			parsingExcludes = true
 		case "--help", "-h":
@@ -106,139 +606,66 @@ func parseArguments(args []string) *Arguments {
 			os.Exit(0)
 		default:
 			if parsingExcludes {
-				result.ExcludeWords = append(result.ExcludeWords, arg)
+				res.ExcludeWords = append(res.ExcludeWords, a)
 			} else {
-				result.SearchWords = append(result.SearchWords, arg)
+				res.SearchWords = append(res.SearchWords, a)
 			}
 		}
 	}
-
-	return result
+	return res
 }
 
-// showUsage displays usage information
+// showUsage (basic)
 func showUsage() {
-	fmt.Printf("%s%sfind-words%s - High-Performance Document Search Tool (Pure Go)\n", BOLD, BLUE, NC)
+	fmt.Println(headerStyle.Render("garp - High-Performance Document Search Tool (Pure Go)"))
 	fmt.Println()
-	fmt.Printf("%sUSAGE:%s\n", BOLD, NC)
-	fmt.Printf("  find-words %sword1 word2 word3%s [...]\n", YELLOW, NC)
-	fmt.Printf("  find-words %s--code%s word1 word2 [...]\n", YELLOW, NC)
-	fmt.Printf("  find-words word1 word2 %s--not%s %sexcludeword%s [...]\n", RED, NC, YELLOW, NC)
+	fmt.Printf("%sUSAGE:%s\n", subHeaderStyle.Render("USAGE:"), "")
+	fmt.Printf("  garp word1 word2 word3 [...]\n")
+	fmt.Printf("  garp --code word1 word2 [...]\n")
+	fmt.Printf("  garp word1 word2 --not excludeword [...]\n")
 	fmt.Println()
-	fmt.Printf("%sOPTIONS:%s\n", BOLD, NC)
-	fmt.Printf("  %s--code%s    Include programming/code files (.js, .py, .sql, etc.)\n", YELLOW, NC)
-	fmt.Printf("  %s--not%s     Exclude files containing the following words\n", RED, NC)
-	fmt.Printf("  %s--help%s    Show this help message\n", YELLOW, NC)
-	fmt.Printf("  %s--version%s Show version information\n", YELLOW, NC)
-	fmt.Println()
-	fmt.Printf("%sEXAMPLES:%s\n", BOLD, NC)
-	fmt.Printf("  find-words contract payment agreement\n")
-	fmt.Printf("  find-words --code function database --not test\n")
-	fmt.Printf("  find-words bitcoin ethereum --not scam --not demo\n")
-	fmt.Println()
-	fmt.Printf("%sPERFORMANCE:%s\n", BOLD, NC)
-	fmt.Printf("  • %s100%% Pure Go%s - No external dependencies\n", GREEN, NC)
-	fmt.Printf("  • %sParallel Processing%s - Multi-core CPU utilization\n", GREEN, NC)
-	fmt.Printf("  • %sMemory Optimized%s - Efficient for large file sets\n", GREEN, NC)
-	fmt.Printf("  • %sSmart Filtering%s - Advanced file type detection\n", GREEN, NC)
 }
 
-// showVersion displays version information
+// showVersion
 func showVersion() {
-	fmt.Printf("%sfind-words%s v2.0.0\n", BOLD, NC)
-	fmt.Printf("High-Performance Document Search Tool\n")
-	fmt.Printf("Pure Go Implementation - No Dependencies\n")
-	fmt.Printf("Copyright © 2024\n")
+	fmt.Println(headerStyle.Render("garp v" + version))
+	fmt.Println("High-Performance Document Search Tool")
+	fmt.Println("Pure Go Implementation")
 }
 
-// showSearchInfo displays search configuration
-func showSearchInfo(args *Arguments) {
-	fmt.Printf("%s%s🚀 High-Performance Multi-Word Search%s\n", BOLD, BLUE, NC)
-	fmt.Printf("%s%s%s\n", GRAY, createSeparator(), NC)
-
-	// Show search terms
-	quotedWords := make([]string, len(args.SearchWords))
-	for i, word := range args.SearchWords {
-		quotedWords[i] = fmt.Sprintf("\"%s\"", word)
-	}
-	fmt.Printf("%sSearching for:%s %s%s%s\n", BOLD, NC, GREEN, strings.Join(quotedWords, " "), NC)
-	fmt.Printf("%sWord count:%s %s%d%s\n", BOLD, NC, YELLOW, len(args.SearchWords), NC)
-
-	// Show exclude terms if any
-	if len(args.ExcludeWords) > 0 {
-		quotedExcludes := make([]string, len(args.ExcludeWords))
-		for i, word := range args.ExcludeWords {
-			quotedExcludes[i] = fmt.Sprintf("\"%s\"", word)
-		}
-		fmt.Printf("%sExcluding files with:%s %s%s%s\n", BOLD, NC, RED, strings.Join(quotedExcludes, " "), NC)
+// main: seed TUI, run with alt screen
+func main() {
+	// Parse args
+	args := parseArguments(os.Args[1:])
+	if len(args.SearchWords) == 0 {
+		showUsage()
+		os.Exit(1)
 	}
 
-	// Show file type configuration
-	fileTypeDesc := config.GetFileTypeDescription(args.IncludeCode)
-	fmt.Printf("%sTarget files:%s %s%s%s\n", BOLD, NC, YELLOW, fileTypeDesc, NC)
-
-	// Show performance info
-	fmt.Printf("%sEngine:%s %sPure Go - Parallel Processing%s\n", BOLD, NC, GREEN, NC)
-	fmt.Printf("%sMemory usage:%s %sOptimized for large datasets%s\n", BOLD, NC, GREEN, NC)
-
-	fmt.Println()
-}
-
-// showInteractiveResults displays search results with pagination
-func showInteractiveResults(results []search.SearchResult, searchTime time.Duration) {
-	reader := bufio.NewReader(os.Stdin)
-
-	for i, result := range results {
-		// Clear screen and show header
-		fmt.Printf("\n%s📄 File %d/%d: %s%s\n", BLUE, i+1, len(results), result.FilePath, NC)
-
-		// Show file info
-		absolutePath := search.GetAbsolutePath(result.FilePath)
-		fmt.Printf("    %s🔗 file://%s%s\n", GRAY, absolutePath, NC)
-
-		if result.FileSize > 0 {
-			fmt.Printf("    %s📦 Size: %s%s\n", GRAY, search.FormatFileSize(result.FileSize), NC)
-		}
-
-		// Show content excerpts
-		if len(result.Excerpts) > 0 {
-			fmt.Printf("    %s📋 Content matches:%s\n", GRAY, NC)
-			for _, excerpt := range result.Excerpts {
-				// Indent and show excerpt
-				lines := strings.Split(excerpt, "\n")
-				for _, line := range lines {
-					if strings.TrimSpace(line) != "" {
-						fmt.Printf("    %s\n", line)
-					}
-				}
-			}
-		} else {
-			fmt.Printf("    %s📋 File contains all search terms%s\n", GRAY, NC)
-		}
-
-		// Show navigation prompt with brighter color
-		fmt.Printf("\n%s%s[Press ENTER for next file", BOLD, YELLOW)
-		if i < len(results)-1 {
-			fmt.Printf(", 's' + ENTER to skip remaining")
-		}
-		fmt.Printf(", 'q' + ENTER to quit]%s ", NC)
-
-		// Read user input
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(strings.ToLower(input))
-
-		switch input {
-		case "q", "quit", "exit":
-			fmt.Printf("\n%s✨ Search session ended%s\n", YELLOW, NC)
-			return
-		case "s", "skip":
-			fmt.Printf("\n%s⏭️  Skipping remaining results%s\n", YELLOW, NC)
-			return
-		}
+	// Seed model
+	m := model{
+		results:         []search.SearchResult{},
+		currentPage:     0,
+		pageSize:        1,
+		totalPages:      0,
+		searchTime:      0,
+		quitting:        false,
+		loading:         true,
+		width:           0,
+		height:          0,
+		searchWords:     args.SearchWords,
+		excludeWords:    args.ExcludeWords,
+		includeCode:     args.IncludeCode,
+		confirmSelected: "yes",
+		memUsageText:    "",
+		progressText:    "",
 	}
 
-	// All results shown
-	fmt.Printf("\n%s✅ All results displayed%s\n", GREEN, NC)
-	fmt.Printf("%s📊 Search completed in %.2f seconds%s\n", GRAY, searchTime.Seconds(), NC)
-	fmt.Printf("%s🎉 Found %d matching files%s\n", GREEN, len(results), NC)
+	// Run Bubbletea with alt screen
+	startWall = time.Now()
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
 }

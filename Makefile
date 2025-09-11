@@ -1,8 +1,13 @@
-# Makefile for find-words Go application
+# Makefile for garp Go application
 
-BINARY_NAME=find-words
+BINARY_NAME=garp
 BINARY_PATH=bin/$(BINARY_NAME)
 GO_FILES=$(shell find . -name "*.go" -type f)
+
+# Version embedding
+VERSION_FILE=VERSION
+VERSION:=$(shell [ -f $(VERSION_FILE) ] && sed -n '1p' $(VERSION_FILE) || echo 0.1)
+LDFLAGS=-X main.version=$(VERSION)
 
 # Default target
 all: build
@@ -13,7 +18,7 @@ build: $(BINARY_PATH)
 $(BINARY_PATH): $(GO_FILES)
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p bin
-	go build -o $(BINARY_PATH) .
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) .
 	@echo "Build completed: $(BINARY_PATH)"
 
 # Clean build artifacts
@@ -50,7 +55,7 @@ deps:
 dev:
 	@echo "Building development version with race detection..."
 	@mkdir -p bin
-	go build -race -o bin/$(BINARY_NAME)-dev .
+	go build -race -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-dev .
 	@echo "Development build completed: bin/$(BINARY_NAME)-dev"
 
 # Run the application with sample arguments

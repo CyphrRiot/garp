@@ -3,6 +3,7 @@ package search
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -10,23 +11,26 @@ import (
 var (
 	// HTML/XML tags
 	htmlTagRegex = regexp.MustCompile(`<[^>]*>`)
-	
+
 	// HTML entities
 	htmlEntityRegex = regexp.MustCompile(`&[a-zA-Z0-9#]*;`)
-	
+
 	// Email headers (case insensitive)
 	emailHeaderRegex = regexp.MustCompile(`(?i)^(Content-Type|Content-Transfer-Encoding|MIME-Version|Date|From|To|Subject|Message-ID|Return-Path|Received|X-[^:]*|Authentication-Results):`)
-	
+
 	// CSS/JavaScript blocks (separate patterns since Go doesn't support backreferences)
 	cssRegex = regexp.MustCompile(`(?s)<style[^>]*>.*?</style>`)
 	jsRegex  = regexp.MustCompile(`(?s)<script[^>]*>.*?</script>`)
-	
+
 	// Control characters and excessive whitespace
 	controlCharRegex = regexp.MustCompile(`[\x00-\x1f\x7f-\x9f]`)
-	whitespaceRegex = regexp.MustCompile(`\s+`)
-	
+	whitespaceRegex  = regexp.MustCompile(`\s+`)
+
 	// Lines with too many special characters (likely markup remnants)
 	junkLineRegex = regexp.MustCompile(`^[^a-zA-Z]*$|^[{}[\]();:=<>|\\]{3,}`)
+
+	// Junk lines with excessive = or #
+	junkSymbolsRegex = regexp.MustCompile(`(?m)^[\=\#]{5,}$`)
 )
 
 // CleanContent removes markup, headers, and other noise from content
@@ -34,19 +38,22 @@ func CleanContent(content string) string {
 	// Remove CSS and JavaScript blocks first
 	content = cssRegex.ReplaceAllString(content, "")
 	content = jsRegex.ReplaceAllString(content, "")
-	
+
 	// Remove HTML tags
 	content = htmlTagRegex.ReplaceAllString(content, " ")
-	
+
 	// Remove HTML entities
 	content = htmlEntityRegex.ReplaceAllString(content, " ")
-	
+
 	// Remove control characters
 	content = controlCharRegex.ReplaceAllString(content, "")
-	
+
+	// Remove junk lines with excessive = or #
+	content = junkSymbolsRegex.ReplaceAllString(content, "")
+
 	// Normalize whitespace
 	content = whitespaceRegex.ReplaceAllString(content, " ")
-	
+
 	return strings.TrimSpace(content)
 }
 
@@ -54,64 +61,122 @@ func CleanContent(content string) string {
 func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts int) []string {
 	// Clean content first
 	cleaned := CleanContent(content)
-	
-	excerpts := make([]string, 0, maxExcerpts)
-	seenExcerpts := make(map[string]bool) // Track duplicates
-	
-	// Find all positions where search terms appear
-	var matches []matchInfo
-	for _, term := range searchTerms {
+
+	// Find all positions of all words
+	type wordMatch struct {
+		pos       int
+		wordIndex int
+	}
+	var allMatches []wordMatch
+	for i, term := range searchTerms {
 		pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(term))
 		regex := regexp.MustCompile(pattern)
-		
 		indexes := regex.FindAllStringIndex(cleaned, -1)
 		for _, idx := range indexes {
-			matches = append(matches, matchInfo{
-				start: idx[0],
-				end:   idx[1],
-				term:  term,
-			})
+			allMatches = append(allMatches, wordMatch{pos: idx[0], wordIndex: i})
 		}
 	}
-	
-	// Extract context around each match
-	for _, match := range matches {
-		if len(excerpts) >= maxExcerpts {
-			break
+
+	if len(allMatches) < len(searchTerms) {
+		return []string{}
+	}
+
+	// Sort by position
+	sort.Slice(allMatches, func(i, j int) bool {
+		return allMatches[i].pos < allMatches[j].pos
+	})
+
+	// Find minimal window containing all words
+	minWindow := len(cleaned)
+	windowStart := -1
+	wordCount := make(map[int]int)
+	requiredWords := len(searchTerms)
+	currentWords := 0
+	left := 0
+
+	for right := 0; right < len(allMatches); right++ {
+		wordCount[allMatches[right].wordIndex]++
+		if wordCount[allMatches[right].wordIndex] == 1 {
+			currentWords++
 		}
-		
-		// Extract 100 characters before and after the match
-		start := max(0, match.start-100)
-		end := min(len(cleaned), match.end+100)
-		
-		// Find word boundaries to avoid cutting words
-		for start > 0 && cleaned[start] != ' ' && cleaned[start] != '\n' {
-			start--
+
+		for currentWords == requiredWords && left <= right {
+			windowSize := allMatches[right].pos - allMatches[left].pos
+			if windowSize < minWindow {
+				minWindow = windowSize
+				windowStart = left
+			}
+			wordCount[allMatches[left].wordIndex]--
+			if wordCount[allMatches[left].wordIndex] == 0 {
+				currentWords--
+			}
+			left++
 		}
-		for end < len(cleaned) && cleaned[end] != ' ' && cleaned[end] != '\n' {
-			end++
-		}
-		
-		excerpt := strings.TrimSpace(cleaned[start:end])
-		
-		// Skip if too short or duplicate
-		if len(excerpt) < 20 || seenExcerpts[excerpt] {
+	}
+
+	if windowStart == -1 {
+		return []string{}
+	}
+
+	// Extract the entire minimal window with padding
+	startPos := allMatches[windowStart].pos
+	endPos := allMatches[windowStart+requiredWords-1].pos + len(searchTerms[allMatches[windowStart+requiredWords-1].wordIndex])
+
+	// Extract from start with padding to end with padding
+	extractStart := max(0, startPos-50)
+	extractEnd := min(len(cleaned), endPos+50)
+
+	// Find word boundaries
+	for extractStart > 0 && cleaned[extractStart] != ' ' && cleaned[extractStart] != '\n' {
+		extractStart--
+	}
+	for extractEnd < len(cleaned) && cleaned[extractEnd] != ' ' && cleaned[extractEnd] != '\n' {
+		extractEnd++
+	}
+
+	excerpt := strings.TrimSpace(cleaned[extractStart:extractEnd])
+
+	// Clean up
+	excerpt = strings.ReplaceAll(excerpt, "\n", " ")
+	excerpt = strings.ReplaceAll(excerpt, "\t", " ")
+	excerpt = regexp.MustCompile(`\s+`).ReplaceAllString(excerpt, " ")
+
+	if len(excerpt) >= 20 && hasLetters(excerpt) {
+		highlighted := HighlightTerms(excerpt, searchTerms)
+		return []string{highlighted}
+	}
+
+	// Fallback: if precise excerpt extraction fails, grab a small window around
+	// the first occurrence of any search term so we still show useful context.
+	for _, term := range searchTerms {
+		if strings.TrimSpace(term) == "" {
 			continue
 		}
-		
-		// Clean up the excerpt
-		excerpt = strings.ReplaceAll(excerpt, "\n", " ")
-		excerpt = strings.ReplaceAll(excerpt, "\t", " ")
-		excerpt = regexp.MustCompile(`\s+`).ReplaceAllString(excerpt, " ")
-		
-		// Ensure it has letters and contains at least one search term
-		if hasLetters(excerpt) && containsAnySearchTerm(excerpt, searchTerms) {
-			seenExcerpts[excerpt] = true
-			excerpts = append(excerpts, excerpt)
+		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(term) + `\b`)
+		loc := re.FindStringIndex(cleaned)
+		if loc != nil {
+			fallbackStart := max(0, loc[0]-80)
+			fallbackEnd := min(len(cleaned), loc[1]+80)
+
+			// Expand to word boundaries
+			for fallbackStart > 0 && cleaned[fallbackStart] != ' ' && cleaned[fallbackStart] != '\n' {
+				fallbackStart--
+			}
+			for fallbackEnd < len(cleaned) && cleaned[fallbackEnd] != ' ' && cleaned[fallbackEnd] != '\n' {
+				fallbackEnd++
+			}
+
+			fallback := strings.TrimSpace(cleaned[fallbackStart:fallbackEnd])
+			fallback = strings.ReplaceAll(fallback, "\n", " ")
+			fallback = strings.ReplaceAll(fallback, "\t", " ")
+			fallback = regexp.MustCompile(`\s+`).ReplaceAllString(fallback, " ")
+			if len(fallback) > 0 && hasLetters(fallback) {
+				return []string{HighlightTerms(fallback, searchTerms)}
+			}
 		}
 	}
-	
-	return excerpts
+
+	return []string{}
 }
 
 // matchInfo represents a search term match location
@@ -135,15 +200,15 @@ func containsAnySearchTerm(text string, searchTerms []string) bool {
 func splitIntoSentences(content string) []string {
 	// Clean content first
 	cleaned := CleanContent(content)
-	
+
 	// Split by common sentence endings
 	sentences := regexp.MustCompile(`[.!?]+\s+`).Split(cleaned, -1)
-	
-	// If no sentence breaks, split by line breaks  
+
+	// If no sentence breaks, split by line breaks
 	if len(sentences) == 1 {
 		sentences = strings.Split(cleaned, "\n")
 	}
-	
+
 	// If still one big chunk, split by double spaces or long phrases
 	if len(sentences) == 1 && len(cleaned) > 500 {
 		// Try splitting by double spaces or other natural breaks
@@ -154,7 +219,7 @@ func splitIntoSentences(content string) []string {
 			sentences = chunkText(cleaned, 100)
 		}
 	}
-	
+
 	return sentences
 }
 
@@ -164,26 +229,26 @@ func chunkText(text string, chunkSize int) []string {
 	if len(words) == 0 {
 		return []string{text}
 	}
-	
+
 	var chunks []string
 	var currentChunk strings.Builder
-	
+
 	for _, word := range words {
-		if currentChunk.Len() + len(word) + 1 > chunkSize && currentChunk.Len() > 0 {
+		if currentChunk.Len()+len(word)+1 > chunkSize && currentChunk.Len() > 0 {
 			chunks = append(chunks, currentChunk.String())
 			currentChunk.Reset()
 		}
-		
+
 		if currentChunk.Len() > 0 {
 			currentChunk.WriteString(" ")
 		}
 		currentChunk.WriteString(word)
 	}
-	
+
 	if currentChunk.Len() > 0 {
 		chunks = append(chunks, currentChunk.String())
 	}
-	
+
 	return chunks
 }
 
@@ -193,12 +258,12 @@ func isObviousJunk(line string) bool {
 	if emailHeaderRegex.MatchString(line) {
 		return true
 	}
-	
-	// Skip lines that are ONLY special characters  
+
+	// Skip lines that are ONLY special characters
 	if junkLineRegex.MatchString(line) {
 		return true
 	}
-	
+
 	// If line has at least some letters, keep it
 	letterCount := 0
 	for _, r := range line {
@@ -206,7 +271,7 @@ func isObviousJunk(line string) bool {
 			letterCount++
 		}
 	}
-	
+
 	// Only reject if there are no letters at all
 	return letterCount == 0
 }
@@ -217,16 +282,16 @@ func isJunkLine(line string) bool {
 	if emailHeaderRegex.MatchString(line) {
 		return true
 	}
-	
+
 	// Skip lines that are mostly special characters
 	if junkLineRegex.MatchString(line) {
 		return true
 	}
-	
+
 	// Count special characters vs letters
 	specialCount := 0
 	letterCount := 0
-	
+
 	for _, r := range line {
 		if unicode.IsLetter(r) {
 			letterCount++
@@ -234,12 +299,12 @@ func isJunkLine(line string) bool {
 			specialCount++
 		}
 	}
-	
+
 	// If more than 60% special characters, consider it junk
 	if letterCount > 0 && float64(specialCount)/float64(letterCount) > 0.6 {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -252,18 +317,18 @@ func containsWholeWord(text, word string) bool {
 
 // HighlightTerms highlights search terms in text with color codes
 func HighlightTerms(text string, searchTerms []string) string {
-	const RED = "\033[0;31m"
+	const HI = "\033[1;31m" // bold red for stronger, more visible highlighting
 	const NC = "\033[0m"
-	
+
 	result := text
 	for _, term := range searchTerms {
 		pattern := fmt.Sprintf(`\b%s\b`, regexp.QuoteMeta(term))
 		regex := regexp.MustCompile(`(?i)` + pattern)
 		result = regex.ReplaceAllStringFunc(result, func(match string) string {
-			return RED + match + NC
+			return HI + match + NC
 		})
 	}
-	
+
 	return result
 }
 

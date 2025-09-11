@@ -1,368 +1,235 @@
-# find-words
+<div align="center">
 
-A **pure Go** high-performance document search tool for discovery and forensic analysis. Built from the ground up in Go for maximum speed, reliability, and zero external dependencies. `find-words` finds files containing ALL specified search terms and displays clean, readable excerpts with highlighted matches.
+# :: garp ::
+
+![Version](https://img.shields.io/badge/version-0.1-blue?labelColor=0052cc)
+![License](https://img.shields.io/github/license/CyphrRiot/garp?color=4338ca&labelColor=3730a3)
+![Downloads](https://img.shields.io/github/downloads/CyphrRiot/garp/total?color=16a34a&labelColor=14532d)
+
+![Platform](https://img.shields.io/badge/platform-linux-4338ca?logo=linux&logoColor=white&labelColor=3730a3)
+![Last Commit](https://img.shields.io/github/last-commit/CyphrRiot/garp?color=5b21b6&labelColor=4c1d95)
+![Code Size](https://img.shields.io/github/languages/code-size/CyphrRiot/garp?color=4338ca&labelColor=3730a3)
+
+![Releases](https://img.shields.io/github/v/release/CyphrRiot/garp?color=22c55e&labelColor=14532d)
+![Language](https://img.shields.io/badge/language-Go-4338ca?logo=go&logoColor=c7d2fe&labelColor=3730a3)
+![Build](https://img.shields.io/badge/build-makefile-4c1d95?labelColor=1e1b4b)
+
+</div>
+
+A high‑performance, pure‑Go document search tool with a clean TUI. garp finds files that contain ALL specified terms within a proximity window and supports many common document formats (including emails, Office files, documents, and PDFs) with pure‑Go extractors.
+
+![garp TUI](images/garp.png)
+
+## Quick Usage
+
+```bash
+garp contract payment agreement
+garp mutex changed --code
+garp bank wire update --not .txt test
+```
+
+❌ Note: Better PDF search is in progress for an upcoming release.
 
 ## ✨ Key Features
 
-- **🚀 Pure Go Implementation**: No external dependencies - just download and run!
-- **⚡ High-Performance**: Multi-core parallel processing with optimized algorithms
-- **🎯 Multi-word AND logic**: Find files containing ALL search terms (not just any)
-- **🧹 Smart content extraction**: Strips HTML, CSS, email headers, and other markup
-- **📁 Intelligent file filtering**: Documents by default, programming files with `--code`
-- **❌ Advanced exclusion**: Filter out files containing unwanted terms with `--not`
-- **💾 Large file handling**: Memory-optimized processing for files of any size
-- **🎨 Interactive results**: Beautiful terminal output with highlighted search terms
-- **📊 Performance metrics**: Real-time progress and throughput monitoring
+- 🚀 Pure Go: zero external dependencies – just download and run
+- ⚡ High-Performance: multi-core parallel processing
+- 🎯 Multi-word AND logic (unordered) with a proximity window (default 100 chars)
+- 🧹 Smart content cleaning: strips HTML/CSS/JS, email headers, control chars
+- 📄 Binary document support: .eml, .mbox, .pdf, .docx/.odt, .rtf, .msg (raw)
+- 📁 Intelligent file filtering; include code files with `--code`
+- ❌ Advanced exclusion with `--not` for extensions (e.g., `.txt`) and words
+- 💾 Large file handling with safe, size-aware reads
+- 🎨 Beautiful TUI with excerpts and highlighting
+- 📊 Live progress and per-file status updates
 
-## 🚀 Performance Advantages
+## 🚀 Performance Advantages (vs. typical ripgrep-based pipelines)
 
-### vs. ripgrep-based tools:
+- ✅ Zero dependencies – 100% Go implementation
+- ✅ Memory optimized for large file sets
+- ✅ Parallel processing across CPU cores
+- ✅ Cross-platform: Linux, macOS, Windows
+- ✅ Content-aware parsing and excerpt extraction
 
-- ✅ **Zero dependencies** - No need to install ripgrep or other tools
-- ✅ **Memory optimized** - Efficient processing of large file sets
-- ✅ **Parallel processing** - Utilizes all CPU cores automatically
-- ✅ **Cross-platform** - Single binary runs on Linux, macOS, Windows
-- ✅ **Content-aware** - Smart document parsing and excerpt extraction
+## Highlights
 
-## 📥 Installation
+- Pure Go: zero external tools required
+- Multi‑word AND search (unordered)
+- Proximity window (default: 100 characters) across the matched terms
+- Email/document extraction: EML, MBOX, PDF, DOCX/ODT, RTF (MSG raw)
+- Smart cleaning: strips HTML/CSS/JS, email headers, control chars, etc.
+- Beautiful TUI with live progress, paging, and excerpts
+- Optional inclusion of code files
 
-### Option 1: Build from Source (Recommended)
+## Install
+
+Option 1: Download the prebuilt binary
+
+- Direct download: https://github.com/CyphrRiot/garp/blob/main/bin/garp
+- Example install:
+  `curl -L -o ~/.local/bin/garp https://raw.githubusercontent.com/CyphrRiot/garp/main/bin/garp && chmod +x ~/.local/bin/garp`
+  (ensure `~/.local/bin` is on your `PATH`)
+
+Option 2: Build and install
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd find-words
-
-# Build the binary
-make
-
-# Install to ~/.local/bin (ensure it's in your PATH)
 make install
 ```
 
-### Option 2: Pre-built Binaries
+This builds the binary to `bin/garp` and copies it to `~/.local/bin/garp`.
 
-Download pre-built binaries from the [Releases](../../releases) page - no dependencies required!
+Option 2: Use the prebuilt binary in this repo
 
-## 🔧 Usage
+- The latest binary is kept at `bin/garp`. You can copy that directly to a directory on your `PATH`.
 
-### Basic Multi-Word Search
+## Quick start
 
-Find files containing ALL specified words:
+- Basic multi‑word search (unordered within distance window):
 
-```bash
-find-words contract payment agreement
-```
+    ```bash
+    garp contract payment agreement
 
-### Advanced Search with Exclusions
+    ```
 
-Exclude files containing specific terms:
+- Include code files in the search:
 
-```bash
-find-words chris incentive --not test demo fake
-```
+    ```bash
+    garp please update --code
+    ```
 
-### Include Programming Files
+- Exclude words and/or file types:
 
-Search both documents and code files:
+    ```bash
+    garp please wire update --not .txt test demo
+    ```
 
-```bash
-find-words --code function database --not example
-```
+    Notes:
+    - Tokens after `--not` are treated as exclusions.
+    - Exclusions that start with a dot (e.g., `.txt`, `.pdf`) are treated as file extension excludes.
+    - Other tokens are treated as content words to exclude.
 
-### Legal Discovery Example
+## Behavior and UI
 
-```bash
-find-words ethereum blockchain --not scam --not demo --not test
-```
+- Matching is unordered within a distance window (default: 100 characters). If all terms appear within that window anywhere in the file, the file matches.
+- During search, the TUI shows:
+    - A header with the ASCII logo, search terms, and environment info
+    - A live progress line: `⏳ Processing (N/M): /path/to/current/file`
+    - A scrolling results box (file details and excerpts)
+    - A non‑scrolling status area above the footer (e.g., “📋 Found N files with matches” and prompts)
+    - Footer with navigation hints
 
-## 📂 Supported File Types
+- Navigation keys:
+    - Next file: `n`, `y`, `space`, or `enter`
+    - Previous file: `p`
+    - Quit: `q` (or `Ctrl+C`)
 
-### Document Files (Default Search)
+- Layout rules:
+    - The header and footer do not scroll.
+    - Found/continue status is shown outside the scrolling box (never scrolls off screen).
+    - The results box clips instead of overflowing the terminal.
 
-- **Text**: `.txt`, `.md`, `.log`
-- **Web**: `.html`, `.xml`, `.csv`, `.yaml`, `.json`
-- **Email**: `.eml`, `.mbox`, `.msg`
-- **Office**: `.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`
-- **OpenOffice**: `.odt`, `.ods`, `.odp`
-- **Configuration**: `.rtf`, `.cfg`, `.conf`, `.ini`, `.sh`, `.bat`
+## Supported formats
 
-### Programming Files (`--code` flag)
+Document files (default)
 
-- **Languages**: `.js`, `.ts`, `.py`, `.php`, `.java`, `.cpp`, `.c`, `.go`, `.rs`, `.rb`
-- **Data**: `.sql`, `.json`
-- **Web**: `.css`, `.scss`, `.less`
-- **Mobile**: `.swift`, `.kt`, `.dart`
-- **And many more...**
+- Text: `.txt`, `.md`, `.log`, `.rtf`
+- Web: `.html`, `.xml`
+- Data/Config: `.csv`, `.yaml`, `.yml`, `.cfg`, `.conf`, `.ini`, `.sh`, `.bat`
+- Email: `.eml` (MIME parsing), `.mbox` (collections of messages), `.msg` (raw content)
+- Office: `.pdf` (text extraction), `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`
+- OpenOffice: `.odt`, `.ods`, `.odp`
 
-## 🎨 Beautiful Output
+Code files (with `--code`)
 
-```
-🚀 High-Performance Multi-Word Search
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔍 Searching for: "contract" "payment" "agreement"
-❌ Excluding: "test" "demo"
-📁 Target files: documents and code files
-🚀 Engine: Pure Go - Parallel Processing
+- `.go`, `.js`, `.ts`, `.py`, `.java`, `.cpp`, `.c`, `.rs`, `.rb`, `.cs`, `.swift`, `.kt`, `.scala`, `.sql`, `.php`, `.json`, and common variants
 
-📁 Document files to search: 1,247
-⚡ Progress: 500/1,247 files (40.1%) - 45.3 MB/s
-✅ Search Complete!
-📊 Performance Summary:
-   • Files processed: 1,247
-   • Files matched: 23
-   • Total time: 2.34s
-   • Throughput: 67.8 MB/s
+Binary extraction (pure Go)
 
-📋 Found 23 files with matches
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- EML: `enmime`
+- MBOX: `emersion/go-mbox`
+- PDF: `ledongthuc/pdf`
+- DOCX/ODT: `archive/zip` + XML parsing
+- RTF: regex/control word stripping
+- MSG: raw content fallback
 
-📄 File 1/23: /path/to/contract.pdf
-    🔗 file:///path/to/contract.pdf
-    📦 Size: 2.4 MB
-    📋 Content matches:
-    The payment schedule outlined in this contract specifies that all
-    agreement terms must be met before the final payment is released.
+## How it works (Pure Go)
 
-[Press ENTER for next file, 's' + ENTER to skip remaining, 'q' + ENTER to quit]
-```
+- File discovery: walks the directory tree in Go, filtering by known document/code extensions.
+- Exclusions:
+    - Extensions (tokens after `--not` beginning with a dot) are filtered before content checks.
+    - Word exclusions are checked against file content (or extracted text for binary files).
+- Matching:
+    - Text files: read content (with size limits for large files), then apply unordered, distance‑bounded matching.
+    - Binary files: extract text using pure‑Go extractors, then apply the same matching logic.
+- Output:
+    - Content is cleaned to remove markup, control characters, CSS/JS blocks, and email headers.
+    - Excerpts show matched context with basic highlighting.
 
-## ⚡ Performance Bench
+## Usage summary
 
-marks
-
-**Typical Performance** (tested on modern hardware):
-
-- **Small datasets** (< 1,000 files): **10-30 seconds**
-- **Medium datasets** (1,000-10,000 files): **30 seconds - 2 minutes**
-- **Large datasets** (10,000+ files): **2-10 minutes**
-- **Throughput**: **50-200 MB/s** (depending on file types and hardware)
-
-**Memory Usage:**
-
-- Small searches: ~50-100 MB
-- Large searches: ~500MB-1GB (automatically optimized)
-
-## 🛠️ Build Commands
-
-```bash
-make           # Build the binary to bin/find-words
-make clean     # Remove build artifacts
-make test      # Run tests
-make fmt       # Format Go code
-make install   # Install to ~/.local/bin
-make uninstall # Remove from ~/.local/bin
-make help      # Show all available commands
-```
-
-## 🏗️ Architecture & Development
-
-### High-Performance Design
+Command
 
 ```
-find-words/
-├── main.go              # CLI interface and user interaction
-├── search/              # High-performance search engine
-│   ├── engine.go        # Main search orchestration
-│   ├── parallel.go      # Parallel processing & worker pools
-│   ├── walker.go        # Concurrent file discovery
-│   ├── matcher.go       # Optimized word matching with mmap
-│   ├── filter.go        # File filtering and validation
-│   └── cleaner.go       # Content cleaning and highlighting
-├── config/              # Configuration and file types
-│   └── types.go         # File type definitions & performance tuning
-├── bin/                 # Built binaries
-├── go.mod
+garp [--code] <word1> <word2> ... [--not <exclude1> <exclude2> ...]
 ```
 
-               # Go module definition
+Flags
 
-├── Makefile # Build configuration
-└── README.md # This file
+- `--code`: include programming/code files in the search
+- `--not`: everything after this is treated as exclusions
+    - Exclusions that start with a dot exclude extensions (e.g., `.txt`, `.pdf`)
+    - Other exclusions are treated as words to exclude
+- `--help`, `-h`: show help
+- `--version`, `-v`: show version
 
-````
+Notes
 
-### Performance Features
+- The proximity window is currently fixed at 100 characters.
+- Exclusions apply across the search (not per‑file).
 
-- **Parallel File Discovery**: Concurrent directory traversal
-- **Worker Pools**: Optimal CPU utilization with configurable workers
-- **Memory Mapping**: Efficient large file processing
-- **Smart Buffering**: Minimizes memory allocation and GC pressure
-- **Boyer-Moore Search**: Optimized string matching algorithms
-- **Load Balancing**: Dynamic work distribution across cores
+## Building
 
-### Development Build
+- `make`: build to `bin/garp`
+- `make install`: build and copy to `~/.local/bin/garp`
+- `make clean`: remove build artifacts
+- `make fmt`, `make test`, `make tidy`: standard dev tasks
 
-```bash
-make dev    # Build with race detection and debug info
-````
+We keep the latest binary in `bin/garp` in this repo for convenience so users can download a single file.
 
-## 🎯 Use Cases
+## Versioning
 
-### Legal Discovery & eDiscovery
+- The current version is tracked in the `VERSION` file (currently `0.1`).
+- The `garp` binary reports this version via `--version`.
+- Releases should be tagged with the same version, and the README badge updated to match.
 
-```bash
-# Find contracts and agreements
-find-words contract settlement --not template --not example
+## Architecture
 
-# Locate communications with specific people
-find-words "john doe" payment --not test
-
-# Search for financial terms
-find-words payment invoice transaction --not demo
+```
+garp/
+├── main.go            # TUI, argument parsing, progress streaming, results
+├── search/
+│   ├── engine.go      # Search orchestration (silent mode for TUI)
+│   ├── filter.go      # File walking, matching logic, size-limited reads
+│   ├── cleaner.go     # Content cleaning, excerpt extraction, highlighting
+│   └── extractor.go   # Pure-Go text extraction for binary formats
+├── config/
+│   └── types.go       # Supported types, globs/filters, descriptions
+├── bin/               # Built binary (kept in-repo for convenience)
+├── images/
+│   └── garp.png       # Screenshot used in README
+├── Makefile
+└── README.md
 ```
 
-### Digital Forensics
+## FAQ
 
-```bash
-# Cryptocurrency investigations
-find-words bitcoin cryptocurrency --not news --not article
+- How does multi‑word matching work?
+    - Unordered AND within a proximity window (default: 100 characters between the earliest and latest matched terms).
+- Can I change the distance?
+    - Not yet. If you need this, please open an issue—adding a flag is straightforward.
+- Is it cross‑platform?
+    - Yes, the implementation is pure Go and should work on Linux, macOS, and Windows terminals that support ANSI/TUI. You’ll need a compatible terminal for best results.
 
-# Security incidents
-find-words password credential --not documentation --not example
+## License
 
-# Email investigations
-find-words confidential insider --not training
-```
-
-### Code Analysis & Auditing
-
-```bash
-# Database security audit
-find-words --code database password --not test --not mock
-
-# API key detection
-find-words --code api key secret --not example --not readme
-
-# Vulnerability research
-find-words --code sql injection --not comment --not tutorial
-```
-
-### Content & Document Management
-
-```bash
-# Policy document review
-find-words policy procedure --not draft --not template
-
-# Compliance checking
-find-words gdpr privacy data --not example
-
-# Research and analysis
-find-words climate change impact --not abstract
-```
-
-## 🆚 Comparison with Other Tools
-
-| Feature                    | find-words         | ripgrep             | grep               | ag (silver-searcher) |
-| -------------------------- | ------------------ | ------------------- | ------------------ | -------------------- |
-| **Dependencies**           | ✅ None            | ❌ Requires ripgrep | ✅ Built-in        |
-| ❌ Requires ag             |
-| **Installation**           | ✅ Single          |
-| binary                     | ❌ Package manager | ✅ Built-in         | ❌ Package manager |
-| **Multi-word AND**         | ✅ Native          | ❌ Complex regex    | ❌ Complex pipes   | ❌ Complex regex     |
-| **Content Cleaning**       | ✅ Advanced        | ❌ None             | ❌ None            | ❌ None              |
-| **Interactive UI**         | ✅ Beautiful       | ❌ Basic            | ❌ Basic           | ❌ Basic             |
-| **Large File Handling**    | ✅ Optimized       | ✅ Good             | ❌ Memory issues   | ❌ Memory issues     |
-| **Progress Tracking**      | ✅ Real-time       | ❌ None             | ❌ None            | ❌ None              |
-| **File Type Intelligence** | ✅ Smart detection | ✅ Good             | ❌ Manual          | ✅ Good              |
-
-## 🔧 Advanced Configuration
-
-### Environment Variables
-
-```bash
-# Customize worker count (default: CPU cores × 2)
-export FIND_WORDS_WORKERS=16
-
-# Set memory limit (default: auto-detected)
-export FIND_WORDS_MAX_MEMORY=4GB
-
-# Enable debug mode
-export FIND_WORDS_DEBUG=1
-```
-
-### Performance Tuning
-
-For very large datasets, you can optimize performance:
-
-```bash
-# Increase worker count for I/O bound workloads
-find-words --workers=32 search terms
-
-# Process only smaller files first
-find-words --max-size=10MB search terms
-
-# Skip binary file detection for speed
-find-words --skip-binary-check search terms
-```
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**"No files found":**
-
-- Check if you're in the right directory
-- Try adding `--code` flag for programming files
-- Verify search terms are spelled correctly
-
-**"Out of memory":**
-
-- The tool automatically optimizes memory usage
-- For extremely large datasets, it processes files in chunks
-- Memory usage is typically 50MB-1GB depending on dataset size
-
-**"Slow performance":**
-
-- Ensure you're using SSD storage for best results
-- Large network drives may be slower
-- Use `--workers` flag to optimize for your CPU
-
-### Getting Help
-
-- Use `find-words --help` for usage information
-- Use `find-words --version` for version details
-- Check the GitHub Issues page for known problems
-- Performance issues are usually related to hardware or dataset size
-
-## 📜 License
-
-[License information here]
-
-## 🤝 Contributing
-
-We welcome contributions! Here's how to get started:
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes
-4. Run tests: `make test`
-5. Format code: `make fmt`
-6. Commit changes: `git commit -am 'Add amazing feature'`
-7. Push to branch: `git push origin feature/amazing-feature`
-8. Submit a pull request
-
-### Development Guidelines
-
-- Follow Go best practices and idioms
-- Maintain backward compatibility
-- Add tests for new features
-- Update documentation for API changes
-- Optimize for performance while maintaining readability
-
-## 📞 Support & Community
-
-- 🐛 **Issues**: Report bugs on GitHub Issues
-- 💡 **Feature Requests**: Suggest improvements on GitHub
-- 📖 **Documentation**: Check the wiki for detailed guides
-- 💬 **Discussions**: Join GitHub Discussions for questions
-
-## 🙏 Acknowledgments
-
-- Inspired by the speed of ripgrep, built with the reliability of Go
-- Thanks to the Go community for excellent tooling and libraries
-- Performance optimizations based on modern search engine techniques
-
----
-
-**Built with ❤️ in Go | Zero Dependencies | Maximum Performance**
+MIT
