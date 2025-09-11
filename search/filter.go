@@ -490,7 +490,23 @@ func StreamContainsWord(filePath string, word string) bool {
 
 	const chunkSize = 64 * 1024
 	const overlap = 128
-	const maxBytes = 10 * 1024 * 1024
+
+	// Compute maxBytes consistent with GetFileContent limits
+	stat, statErr := f.Stat()
+	var maxBytes int64
+	if statErr == nil {
+		switch {
+		case stat.Size() > 50*1024*1024:
+			maxBytes = 10 * 1024 * 1024
+		case stat.Size() > 10*1024*1024:
+			maxBytes = 5 * 1024 * 1024
+		default:
+			maxBytes = stat.Size()
+		}
+	} else {
+		// Fallback to previous hard cap if stat fails
+		maxBytes = 10 * 1024 * 1024
+	}
 	var total int64
 	prev := make([]byte, 0, overlap)
 	buf := make([]byte, chunkSize)

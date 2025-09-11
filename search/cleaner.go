@@ -54,6 +54,14 @@ func CleanContent(content string) string {
 	// Normalize whitespace
 	content = whitespaceRegex.ReplaceAllString(content, " ")
 
+	// Insert missing spaces to improve readability in extracted content
+	// Letter followed by digit (e.g., "Account10" -> "Account 10")
+	content = regexp.MustCompile(`([A-Za-z])([0-9])`).ReplaceAllString(content, `$1 $2`)
+	// Digit followed by letter (e.g., "7367NEXT" -> "7367 NEXT")
+	content = regexp.MustCompile(`([0-9])([A-Za-z])`).ReplaceAllString(content, `$1 $2`)
+	// Ensure a space after commas when missing (e.g., "21,5:43" -> "21, 5:43")
+	content = regexp.MustCompile(`,([^\s])`).ReplaceAllString(content, `, $1`)
+
 	return strings.TrimSpace(content)
 }
 
@@ -146,8 +154,8 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 		return []string{highlighted}
 	}
 
-	// Fallback: if precise excerpt extraction fails, grab a small window around
-	// the first occurrence of any search term so we still show useful context.
+	// Fallback: if precise excerpt extraction fails, expand to sentence boundaries
+	// around the first occurrence of any search term for richer context.
 	for _, term := range searchTerms {
 		if strings.TrimSpace(term) == "" {
 			continue
@@ -155,23 +163,45 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(term) + `\b`)
 		loc := re.FindStringIndex(cleaned)
 		if loc != nil {
-			fallbackStart := max(0, loc[0]-80)
-			fallbackEnd := min(len(cleaned), loc[1]+80)
-
-			// Expand to word boundaries
-			for fallbackStart > 0 && cleaned[fallbackStart] != ' ' && cleaned[fallbackStart] != '\n' {
-				fallbackStart--
+			// Find previous sentence boundary (. ! ?)
+			left := loc[0]
+			for left > 0 && cleaned[left] != '.' && cleaned[left] != '!' && cleaned[left] != '?' {
+				left--
 			}
-			for fallbackEnd < len(cleaned) && cleaned[fallbackEnd] != ' ' && cleaned[fallbackEnd] != '\n' {
-				fallbackEnd++
+			if left > 0 {
+				// Move to the character after punctuation, skip whitespace
+				left++
+				for left < loc[0] && (cleaned[left] == ' ' || cleaned[left] == '\n' || cleaned[left] == '\t') {
+					left++
+				}
+			} else {
+				left = 0
 			}
 
-			fallback := strings.TrimSpace(cleaned[fallbackStart:fallbackEnd])
-			fallback = strings.ReplaceAll(fallback, "\n", " ")
-			fallback = strings.ReplaceAll(fallback, "\t", " ")
-			fallback = regexp.MustCompile(`\s+`).ReplaceAllString(fallback, " ")
-			if len(fallback) > 0 && hasLetters(fallback) {
-				return []string{HighlightTerms(fallback, searchTerms)}
+			// Find next sentence boundary (. ! ?)
+			right := loc[1]
+			for right < len(cleaned) && cleaned[right] != '.' && cleaned[right] != '!' && cleaned[right] != '?' {
+				right++
+			}
+			if right < len(cleaned) {
+				// Include the punctuation
+				right++
+			} else {
+				right = len(cleaned)
+			}
+
+			// Ensure a minimum context window if sentences are very short
+			if right-left < 160 {
+				left = max(0, left-80)
+				right = min(len(cleaned), right+80)
+			}
+
+			excerpt := strings.TrimSpace(cleaned[left:right])
+			excerpt = strings.ReplaceAll(excerpt, "\n", " ")
+			excerpt = strings.ReplaceAll(excerpt, "\t", " ")
+			excerpt = regexp.MustCompile(`\s+`).ReplaceAllString(excerpt, " ")
+			if len(excerpt) > 0 && hasLetters(excerpt) {
+				return []string{HighlightTerms(excerpt, searchTerms)}
 			}
 		}
 	}

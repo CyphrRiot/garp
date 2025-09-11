@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -57,30 +58,30 @@ var (
 	appStyle = lipgloss.NewStyle().
 			Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("39"))
+			BorderForeground(lipgloss.Color("#7aa2f7"))
 
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("39")).
+			Foreground(lipgloss.Color("#7aa2f7")).
 			Align(lipgloss.Center)
 
 	subHeaderStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("86")).
+			Foreground(lipgloss.Color("#7dcfff")).
 			Bold(true)
 
 	infoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("246"))
+			Foreground(lipgloss.Color("#a9b1d6"))
 
 	successStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42")).
+			Foreground(lipgloss.Color("#9ece6a")).
 			Bold(true)
 
 	warningStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
+			Foreground(lipgloss.Color("#e0af68")).
 			Bold(true)
 
 	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
+			Foreground(lipgloss.Color("#f7768e")).
 			Bold(true)
 
 	separatorStyle = lipgloss.NewStyle().
@@ -259,10 +260,11 @@ func (m model) View() string {
 		logoTop += strings.Repeat(" ", len(logoBottom)-len(logoTop))
 	}
 	logo := logoTop + "\n" + logoBottom
-	logo = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Align(lipgloss.Center).Render(logo)
+	logo = lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Align(lipgloss.Center).Render(logo)
 
 	// Build header info
 	var headerLines []string
+	headerLines = append(headerLines, "")
 	headerLines = append(headerLines, "")
 	headerLines = append(headerLines, logo)
 	headerLines = append(headerLines, "")
@@ -283,7 +285,7 @@ func (m model) View() string {
 
 	// Engine line with cores + RAM/CPU live — use a distinct color
 	engine := fmt.Sprintf("⚙️ Engine: Parallel Processing (%d Cores)%s", runtime.NumCPU(), m.memUsageText)
-	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("178")) // amber/gold
+	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7")) // Tokyo Night magenta
 	headerLines = append(headerLines, engineStyled.Render(engine))
 
 	// Default selection to Yes
@@ -293,7 +295,37 @@ func (m model) View() string {
 
 	searchInfo := lipgloss.JoinVertical(lipgloss.Left, headerLines...)
 
-	// Build box content (loading or results)
+	// Compute dynamic content height for the box (account for header + bottom + footer) FIRST
+	headerHeight := strings.Count(searchInfo, "\n") + 1
+	topStatusHeight := 0
+	if m.loading {
+		topStatusHeight = 2 // progress line + extra headroom to prevent header clipping
+	}
+	// Reserve 2 lines for non-scrolling bottom (spacer + buttons) if results exist
+	footerHintHeight := 0
+	if !m.loading && len(m.results) > 0 {
+		footerHintHeight = 2
+	}
+	quitHeight := 3 // blank line + footer + blank line
+	boxHeight := height - headerHeight - topStatusHeight - footerHintHeight - quitHeight
+	if boxHeight < 8 {
+		boxHeight = 8
+	}
+	// appStyle chrome: vertical (padding 1+1 + border 1+1) = 4; horizontal (padding 2+2 + border 1+1) = 6
+	innerHeight := boxHeight - 4
+	if innerHeight < 3 {
+		innerHeight = 3
+	}
+	boxOuterWidth := width - 4 // keep a small side margin
+	if boxOuterWidth < 20 {
+		boxOuterWidth = 20
+	}
+	innerWidth := boxOuterWidth - 6
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
+
+	// Build box content (loading or results), constrained to contentHeight
 	var boxContent string
 	if m.loading {
 		// Show progress above the box; keep the box empty while loading
@@ -320,29 +352,42 @@ func (m model) View() string {
 
 				// Path and size
 				abs := search.GetAbsolutePath(res.FilePath)
-				resultsContent.WriteString(infoStyle.Render(wrapTextWithIndent("🔗 ", abs, width-4)) + "\n")
+				resultsContent.WriteString(infoStyle.Render(wrapTextWithIndent("🔗 ", abs, innerWidth)) + "\n")
 				if res.FileSize > 0 {
 					resultsContent.WriteString(infoStyle.Render(fmt.Sprintf("📦 Size: %s", search.FormatFileSize(res.FileSize))) + "\n")
 				}
 
 				// Content matches (always show header)
 				resultsContent.WriteString(infoStyle.Render("📋 Content matches:") + "\n")
-				if len(res.Excerpts) > 0 {
+
+				// Dynamically size excerpt to fill the visible box approximately.
+				// Use the computed contentHeight minus a small header allowance (~4 lines).
+				maxLines := innerHeight - 4
+				if maxLines < 3 {
+					maxLines = 3
+				}
+
+				var dyn string
+				if res.CleanContent != "" {
+					dyn = buildDynamicExcerpt(res.CleanContent, m.searchWords, maxLines, innerWidth)
+				}
+
+				if dyn != "" {
+					resultsContent.WriteString(wrapTextWithIndent("", dyn, innerWidth) + "\n")
+				} else if len(res.Excerpts) > 0 {
+					// Fallback to precomputed excerpts if dynamic excerpt is unavailable
 					for _, ex := range res.Excerpts {
-						resultsContent.WriteString(wrapTextWithIndent("", ex, width-4) + "\n")
+						resultsContent.WriteString(wrapTextWithIndent("", ex, innerWidth) + "\n")
 					}
 				} else {
-					// No excerpts provided by the engine for this file
 					resultsContent.WriteString(infoStyle.Render("  (no excerpt provided)") + "\n")
 				}
-				resultsContent.WriteString("\n")
+				// Do not add extra blank lines that push content; rely on clipping instead
 			}
-
-			footer := fmt.Sprintf("📊 Search completed in %.2f seconds", m.searchTime.Seconds())
-			resultsContent.WriteString(infoStyle.Render(footer))
 		}
 
-		boxContent = resultsContent.String()
+		// Clip to visible content height
+		boxContent = clipLines(resultsContent.String(), innerHeight)
 	}
 
 	// Non-scrolling bottom status (found count + buttons)
@@ -355,19 +400,19 @@ func (m model) View() string {
 			// Inline highlighted buttons (no border boxes), similar to Migrate
 			yesSel := lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("0")).
-				Background(lipgloss.Color("42")).
+				Foreground(lipgloss.Color("#1a1b26")).
+				Background(lipgloss.Color("#9ece6a")).
 				Padding(0, 1)
 			yesUn := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("42")).
+				Foreground(lipgloss.Color("#9ece6a")).
 				Padding(0, 1)
 			noSel := lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("0")).
-				Background(lipgloss.Color("240")).
+				Foreground(lipgloss.Color("#c0caf5")).
+				Background(lipgloss.Color("#414868")).
 				Padding(0, 1)
 			noUn := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("240")).
+				Foreground(lipgloss.Color("#565f89")).
 				Padding(0, 1)
 
 			var yesBtn, noBtn string
@@ -390,31 +435,7 @@ func (m model) View() string {
 		Align(lipgloss.Center).
 		Render("🔚 PRESS 'q' TO QUIT  •  p: previous  •  n: next")
 
-	// Compute dynamic content height for the box (account for header + bottom + footer)
-	headerHeight := strings.Count(searchInfo, "\n") + 1
-
-	// Account for top progress line while loading
-	topStatusHeight := 0
-	if m.loading {
-		topStatusHeight = 1
-	}
-
-	bottomStatusHeight := 0
-	if bottomStatus != "" {
-		bottomStatusHeight = strings.Count(bottomStatus, "\n") + 1
-	}
-	footerHeight := strings.Count(quitInstruction, "\n") + 2 // +1 blank after footer
-	boxHeight := height - headerHeight - topStatusHeight - bottomStatusHeight - footerHeight
-	if boxHeight < 8 {
-		boxHeight = 8
-	}
-
-	// appStyle adds 1-row padding top+bottom and 1-row border top+bottom => chrome = 4
-	chrome := 4
-	contentHeight := boxHeight - chrome
-	if contentHeight < 3 {
-		contentHeight = 3
-	}
+	// (moved height calculation earlier to size excerpt correctly)
 
 	// Assemble the full view (exactly one bordered box)
 	var parts []string
@@ -427,11 +448,11 @@ func (m model) View() string {
 			// Expect m.progressText formatted as "[num/total]: filename"
 			txt = fmt.Sprintf("⏳ Processing %s", m.progressText)
 		}
-		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("46")) // bright green
+		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff")) // Tokyo Night cyan
 		parts = append(parts, progressStyled.Render(txt))
 	}
 
-	parts = append(parts, appStyle.Width(width-4).Height(contentHeight).Render(clipLines(boxContent, contentHeight)))
+	parts = append(parts, appStyle.Width(boxOuterWidth).Height(boxHeight).Render(boxContent))
 	if bottomStatus != "" {
 		parts = append(parts, bottomStatus)
 	}
@@ -505,6 +526,132 @@ func wrapTextWithIndent(prefix, text string, totalWidth int) string {
 }
 
 func runeLen(s string) int { return len([]rune(s)) }
+
+// buildDynamicExcerpt creates a dynamically sized excerpt around the first match of any term,
+// trying to expand to sentence boundaries, and then outwards to approximately maxLines * lineWidth characters.
+func buildDynamicExcerpt(content string, terms []string, maxLines int, lineWidth int) string {
+	if maxLines < 1 || lineWidth < 10 {
+		return ""
+	}
+	targetChars := maxLines * lineWidth
+	if targetChars < 120 {
+		targetChars = 120
+	}
+
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return ""
+	}
+
+	// Find the earliest occurrence of any term (case-insensitive)
+	lower := strings.ToLower(text)
+	matchStart := -1
+	matchEnd := -1
+	for _, t := range terms {
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		tl := strings.ToLower(t)
+		pos := strings.Index(lower, tl)
+		if pos >= 0 && (matchStart == -1 || pos < matchStart) {
+			matchStart = pos
+			matchEnd = pos + len(tl)
+		}
+	}
+	// If nothing found, return the head of the document clipped to target
+	if matchStart == -1 {
+		if len(text) <= targetChars {
+			return highlightTermsANSI(text, terms)
+		}
+		return highlightTermsANSI(text[:targetChars], terms)
+	}
+
+	// Expand to sentence boundaries
+	left := matchStart
+	for left > 0 && text[left] != '.' && text[left] != '!' && text[left] != '?' {
+		left--
+	}
+	if left > 0 {
+		left++
+		for left < matchStart && (text[left] == ' ' || text[left] == '\n' || text[left] == '\t') {
+			left++
+		}
+	} else {
+		left = 0
+	}
+
+	right := matchEnd
+	for right < len(text) && text[right] != '.' && text[right] != '!' && text[right] != '?' {
+		right++
+	}
+	if right < len(text) {
+		right++
+	} else {
+		right = len(text)
+	}
+
+	// Ensure we meet target size by expanding word-wise if needed
+	for (right-left) < targetChars && (left > 0 || right < len(text)) {
+		expand := (targetChars - (right - left)) / 2
+		if expand < 20 {
+			expand = 20
+		}
+		if left > 0 {
+			newLeft := left - expand
+			if newLeft < 0 {
+				newLeft = 0
+			}
+			// round to word boundary
+			for newLeft > 0 && text[newLeft] != ' ' && text[newLeft] != '\n' {
+				newLeft--
+			}
+			left = newLeft
+		}
+		if right < len(text) {
+			newRight := right + expand
+			if newRight > len(text) {
+				newRight = len(text)
+			}
+			// round to word boundary
+			for newRight < len(text) && newRight > right && text[newRight-1] != ' ' && text[newRight-1] != '\n' {
+				newRight++
+				if newRight >= len(text) {
+					break
+				}
+			}
+			if newRight > len(text) {
+				newRight = len(text)
+			}
+			right = newRight
+		}
+		if left == 0 && right == len(text) {
+			break
+		}
+	}
+
+	ex := strings.TrimSpace(text[left:right])
+	// Normalize whitespace
+	ex = strings.ReplaceAll(ex, "\n", " ")
+	ex = strings.ReplaceAll(ex, "\t", " ")
+	ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
+	return highlightTermsANSI(ex, terms)
+}
+
+// highlightTermsANSI applies a bold red ANSI style to matched whole words (case-insensitive)
+func highlightTermsANSI(text string, terms []string) string {
+	const hi = "\033[1;31m"
+	const nc = "\033[0m"
+	out := text
+	for _, t := range terms {
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		pattern := `(?i)\b` + regexp.QuoteMeta(t) + `\b`
+		re := regexp.MustCompile(pattern)
+		out = re.ReplaceAllStringFunc(out, func(m string) string { return hi + m + nc })
+	}
+	return out
+}
 
 // Mem/CPU ticker
 func (m model) memUsageTick() tea.Cmd {

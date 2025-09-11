@@ -9,9 +9,10 @@ import (
 
 // SearchResult represents a file that matches all search criteria
 type SearchResult struct {
-	FilePath string
-	FileSize int64
-	Excerpts []string
+	FilePath     string
+	FileSize     int64
+	Excerpts     []string
+	CleanContent string
 }
 
 // ProgressFunc is an optional callback to report progress like: processed, total, path
@@ -151,12 +152,7 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 			continue
 		}
 
-		// Prefilter for .msg: check first word via streaming
-		if IsBinaryFormat(filePath) && ext == ".msg" {
-			if !StreamContainsWord(filePath, se.SearchWords[0]) {
-				continue
-			}
-		}
+		// Removed .msg prefilter skip to avoid false negatives
 
 		// Check if file contains all search words
 		hasAllWords := true
@@ -308,9 +304,10 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 		}
 
 		result := SearchResult{
-			FilePath: filePath,
-			FileSize: fileSize,
-			Excerpts: highlightedExcerpts,
+			FilePath:     filePath,
+			FileSize:     fileSize,
+			Excerpts:     highlightedExcerpts,
+			CleanContent: cleanContent,
 		}
 
 		results = append(results, result)
