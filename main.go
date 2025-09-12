@@ -293,6 +293,18 @@ func (m model) View() string {
 	engine := fmt.Sprintf("⚙️ Engine: Workers: 1%s", m.memUsageText)
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7")) // Tokyo Night magenta
 	headerLines = append(headerLines, engineStyled.Render(engine))
+	// Elapsed search time
+	var elapsed time.Duration
+	var label string
+	if m.loading {
+		elapsed = time.Since(startWall)
+		label = "Searching"
+	} else {
+		elapsed = m.searchTime
+		label = "Search"
+	}
+	elapsedStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#e0af68")) // Tokyo Night yellow
+	headerLines = append(headerLines, elapsedStyled.Render(fmt.Sprintf("⏱️ %s: %.2f minutes", label, elapsed.Minutes())))
 
 	// Default selection to Yes
 	if m.confirmSelected == "" {
