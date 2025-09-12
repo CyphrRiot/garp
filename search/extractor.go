@@ -92,6 +92,9 @@ func (r *ExtractorRegistry) registerBuiltIns() {
 
 	// Other
 	r.extractors["rtf"] = &RTFExtractor{}
+
+	// PDFs (on-demand extraction; bulk path remains non-extractive)
+	r.extractors["pdf"] = &PDFExtractor{}
 }
 
 // IsBinaryFormat checks if a file extension requires text extraction
@@ -114,7 +117,7 @@ type EMLExtractor struct{}
 // ExtractText implements the Extractor interface for EML files
 func (e *EMLExtractor) ExtractText(data []byte) (string, error) {
 	// Parse the MIME message
-	env, err := enmime.ReadEnvelope(strings.NewReader(string(data)))
+	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("failed to parse EML: %w", err)
 	}
@@ -166,7 +169,7 @@ type MBOXExtractor struct{}
 
 // ExtractText implements the Extractor interface for MBOX files
 func (e *MBOXExtractor) ExtractText(data []byte) (string, error) {
-	reader := mbox.NewReader(strings.NewReader(string(data)))
+	reader := mbox.NewReader(bytes.NewReader(data))
 	var text strings.Builder
 
 	emlExtractor := &EMLExtractor{}

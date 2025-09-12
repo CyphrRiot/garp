@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"find-words/config"
 )
@@ -163,8 +165,8 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 		}
 	}
 
-	pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(word))
-	re := regexp.MustCompile(pattern)
+	// Precompute lowercased search word for fast ASCII whole-word scan
+	wLower := strings.ToLower(word)
 	heavy := map[string]bool{
 		".pdf":  true,
 		".docx": true,
@@ -206,6 +208,43 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 			return nil
 		}
 		defer f.Close()
+
+		// Early path for small files: read whole file at once, avoid chunk loop
+		if st, stErr := f.Stat(); stErr == nil && st.Size() <= chunkSize {
+			data, _ := io.ReadAll(f)
+			lower := strings.ToLower(string(data))
+			isWordChar := func(c byte) bool {
+				return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+			}
+			found := false
+			pos := 0
+			for {
+				i := strings.Index(lower[pos:], wLower)
+				if i == -1 {
+					break
+				}
+				i += pos
+				var before byte = ' '
+				if i > 0 {
+					before = lower[i-1]
+				}
+				j := i + len(wLower)
+				var after byte = ' '
+				if j < len(lower) {
+					after = lower[j]
+				}
+				if !isWordChar(before) && !isWordChar(after) {
+					found = true
+					break
+				}
+				pos = i + 1
+			}
+			if found || (!found && st.Size() >= maxBytes) {
+				matches = append(matches, path)
+			}
+			return nil
+		}
+
 		var total int64
 		prev := make([]byte, 0, overlap)
 		buf := make([]byte, chunkSize)
@@ -221,9 +260,36 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 			n, rErr := f.Read(buf[:toRead])
 			if n > 0 {
 				combined := append(prev, buf[:n]...)
-				if re.Match(combined) {
-					found = true
-					break
+				// Fast ASCII whole-word, case-insensitive scan (avoids regex cost)
+				lower := strings.ToLower(string(combined))
+
+				isWordChar := func(c byte) bool {
+					return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+				}
+
+				pos := 0
+				for {
+					i := strings.Index(lower[pos:], wLower)
+					if i == -1 {
+						break
+					}
+					i += pos
+
+					var before byte = ' '
+					if i > 0 {
+						before = lower[i-1]
+					}
+					j := i + len(wLower)
+					var after byte = ' '
+					if j < len(lower) {
+						after = lower[j]
+					}
+
+					if !isWordChar(before) && !isWordChar(after) {
+						found = true
+						break
+					}
+					pos = i + 1
 				}
 				if n >= overlap {
 					prev = append(prev[:0], buf[n-overlap:n]...)
@@ -279,17 +345,154 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		onProgress(0, total, "")
 	}
 
-	pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(word))
-	re := regexp.MustCompile(pattern)
+	wLower := strings.ToLower(word)
 	heavy := map[string]bool{
 		".pdf":  true,
 		".docx": true,
 		".odt":  true,
 		".msg":  true,
 	}
+
+	// Results and synchronization
 	matches := make([]string, 0, 128)
+	var mu sync.Mutex
+
+	// Bounded worker pool
+	workers := 1
+	paths := make(chan string, 1024)
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			const chunkSize = 64 * 1024
+			const overlap = 128
+			const maxBytes = 10 * 1024 * 1024
+
+			for p := range paths {
+				f, openErr := os.Open(p)
+				if openErr != nil {
+					continue
+				}
+
+				// Early path for small files: read whole file at once, avoid chunk loop
+				if st, stErr := f.Stat(); stErr == nil && st.Size() <= chunkSize {
+					data, _ := io.ReadAll(f)
+					_ = f.Close()
+
+					lower := strings.ToLower(string(data))
+					isWordChar := func(c byte) bool {
+						return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+					}
+					found := false
+					pos := 0
+					for {
+						i := strings.Index(lower[pos:], wLower)
+						if i == -1 {
+							break
+						}
+						i += pos
+						var before byte = ' '
+						if i > 0 {
+							before = lower[i-1]
+						}
+						j := i + len(wLower)
+						var after byte = ' '
+						if j < len(lower) {
+							after = lower[j]
+						}
+						if !isWordChar(before) && !isWordChar(after) {
+							found = true
+							break
+						}
+						pos = i + 1
+					}
+					if found {
+						mu.Lock()
+						matches = append(matches, p)
+						mu.Unlock()
+					}
+					continue
+				}
+
+				var readTotal int64
+				prev := make([]byte, 0, overlap)
+				buf := make([]byte, chunkSize)
+				found := false
+
+				for {
+					if readTotal >= maxBytes {
+						break
+					}
+					toRead := chunkSize
+					if rem := maxBytes - readTotal; rem < int64(toRead) {
+						toRead = int(rem)
+					}
+					n, rErr := f.Read(buf[:toRead])
+					if n > 0 {
+						combined := append(prev, buf[:n]...)
+						// Fast ASCII whole-word, case-insensitive scan (avoids regex cost)
+						lower := strings.ToLower(string(combined))
+						isWordChar := func(c byte) bool {
+							return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+						}
+						pos := 0
+						for {
+							i := strings.Index(lower[pos:], wLower)
+							if i == -1 {
+								break
+							}
+							i += pos
+							var before byte = ' '
+							if i > 0 {
+								before = lower[i-1]
+							}
+							j := i + len(wLower)
+							var after byte = ' '
+							if j < len(lower) {
+								after = lower[j]
+							}
+							if !isWordChar(before) && !isWordChar(after) {
+								found = true
+								break
+							}
+							pos = i + 1
+						}
+						if n >= overlap {
+							prev = append(prev[:0], buf[n-overlap:n]...)
+						} else {
+							if len(combined) >= overlap {
+								prev = append(prev[:0], combined[len(combined)-overlap:]...)
+							} else {
+								prev = append(prev[:0], combined...)
+							}
+						}
+						readTotal += int64(n)
+					}
+					if rErr == io.EOF {
+						break
+					}
+					if rErr != nil {
+						break
+					}
+				}
+
+				_ = f.Close()
+
+				if found || (!found && readTotal >= maxBytes) {
+					mu.Lock()
+					matches = append(matches, p)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
 	processed := 0
 
+	// Walk and stream paths to workers
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -310,64 +513,28 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		if onProgress != nil {
 			onProgress(processed, total, path)
 		}
+		// Light throttle to reduce I/O/CPU bursts during discovery
+		if processed%250 == 0 {
+			time.Sleep(2 * time.Millisecond)
+		}
 
+		// Heavy files are added directly; skip worker scan
 		if heavy[ext] {
+			mu.Lock()
 			matches = append(matches, path)
+			mu.Unlock()
 			return nil
 		}
 
-		const chunkSize = 64 * 1024
-		const overlap = 128
-		const maxBytes = 10 * 1024 * 1024
-		f, openErr := os.Open(path)
-		if openErr != nil {
-			return nil
-		}
-		defer f.Close()
-		var readTotal int64
-		prev := make([]byte, 0, overlap)
-		buf := make([]byte, chunkSize)
-		found := false
-
-		for {
-			if readTotal >= maxBytes {
-				break
-			}
-			toRead := chunkSize
-			if rem := maxBytes - readTotal; rem < int64(toRead) {
-				toRead = int(rem)
-			}
-			n, rErr := f.Read(buf[:toRead])
-			if n > 0 {
-				combined := append(prev, buf[:n]...)
-				if re.Match(combined) {
-					found = true
-					break
-				}
-				if n >= overlap {
-					prev = append(prev[:0], buf[n-overlap:n]...)
-				} else {
-					if len(combined) >= overlap {
-						prev = append(prev[:0], combined[len(combined)-overlap:]...)
-					} else {
-						prev = append(prev[:0], combined...)
-					}
-				}
-				readTotal += int64(n)
-			}
-			if rErr == io.EOF {
-				break
-			}
-			if rErr != nil {
-				break
-			}
-		}
-
-		if found {
-			matches = append(matches, path)
-		}
+		// Enqueue for worker scanning
+		paths <- path
 		return nil
 	})
+
+	// Close path feed and wait for workers
+	close(paths)
+	wg.Wait()
+
 	if err != nil {
 		return nil, err
 	}
