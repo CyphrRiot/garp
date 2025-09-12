@@ -167,13 +167,20 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 		hasAllWords := true
 		if len(se.SearchWords) > 1 {
 			if IsBinaryFormat(filePath) {
+				ext := filepath.Ext(filePath)
+				// Prefilter EML/MSG: plural-aware all-words presence via streaming (bounded). Skip if conclusively absent.
+				if strings.EqualFold(ext, ".eml") || strings.EqualFold(ext, ".msg") {
+					if ok, decided := StreamContainsAllWordsDecided(filePath, se.SearchWords); decided && !ok {
+						continue
+					}
+				}
 				// For binary files, extract text first
 				content, _, err := GetFileContent(filePath)
 				if err != nil {
 					fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
 					continue
 				}
-				ext := filepath.Ext(filePath)
+				// ext already determined above
 				if extractor, exists := se.Registry.GetExtractor(ext); exists {
 					extractedText, err := extractor.ExtractText([]byte(content))
 					if err != nil {

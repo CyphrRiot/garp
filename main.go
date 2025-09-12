@@ -290,7 +290,7 @@ func (m model) View() string {
 	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc, width-4)))
 
 	// Engine line with cores + RAM/CPU live — use a distinct color
-	engine := fmt.Sprintf("⚙️ Engine: Parallel Processing (%d Cores)%s", runtime.NumCPU(), m.memUsageText)
+	engine := fmt.Sprintf("⚙️ Engine: Workers: 1%s", m.memUsageText)
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7")) // Tokyo Night magenta
 	headerLines = append(headerLines, engineStyled.Render(engine))
 
@@ -660,19 +660,30 @@ func highlightTermsANSI(text string, terms []string) string {
 // Mem/CPU ticker
 func (m model) memUsageTick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
-		// RAM
+		// Go heap
 		var ms runtime.MemStats
 		runtime.ReadMemStats(&ms)
-		memText := fmt.Sprintf(" • RAM: %.0f MB", float64(ms.Alloc)/(1024*1024))
+		heapMB := float64(ms.Alloc) / (1024 * 1024)
 
-		// CPU (user+sys vs wall) per core
+		// RSS via /proc/self/statm (Linux)
+		rssMB := 0.0
+		if data, err := os.ReadFile("/proc/self/statm"); err == nil {
+			fields := strings.Fields(string(data))
+			if len(fields) >= 2 {
+				if pages, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+					rssMB = float64(pages*uint64(os.Getpagesize())) / (1024 * 1024)
+				}
+			}
+		}
+		memText := fmt.Sprintf(" • Go Heap: %.0f MB • RSS: %.0f MB", heapMB, rssMB)
+
+		// CPU (user+sys vs wall)
 		now := time.Now()
 		var ru unix.Rusage
 		cpuText := ""
 		if err := unix.Getrusage(unix.RUSAGE_SELF, &ru); err == nil {
 			user := time.Duration(ru.Utime.Sec)*time.Second + time.Duration(ru.Utime.Usec)*time.Microsecond
 			sys := time.Duration(ru.Stime.Sec)*time.Second + time.Duration(ru.Stime.Usec)*time.Microsecond
-			// Keep static package-level prev values
 			pct := sampleCPUPercent(now, user+sys, runtime.NumCPU())
 			if pct >= 0 {
 				cpuText = fmt.Sprintf(" • CPU: %.0f%%", pct)

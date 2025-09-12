@@ -460,13 +460,13 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 }
 
 // StreamContainsAllWords streams a file and returns true if all words are present (unordered, plural-aware, CI).
-func StreamContainsAllWords(filePath string, words []string) bool {
+func StreamContainsAllWordsDecided(filePath string, words []string) (found bool, decided bool) {
 	if len(words) == 0 {
-		return true
+		return true, true
 	}
 	f, err := os.Open(filePath)
 	if err != nil {
-		return false
+		return false, true
 	}
 	defer f.Close()
 
@@ -481,7 +481,7 @@ func StreamContainsAllWords(filePath string, words []string) bool {
 		res = append(res, regexp.MustCompile(pat))
 	}
 	if len(res) == 0 {
-		return true
+		return true, true
 	}
 
 	const chunkSize = 64 * 1024
@@ -503,7 +503,7 @@ func StreamContainsAllWords(filePath string, words []string) bool {
 		maxBytes = 10 * 1024 * 1024
 	}
 
-	found := make([]bool, len(res))
+	foundFlags := make([]bool, len(res))
 	remaining := len(res)
 
 	var total int64
@@ -511,7 +511,9 @@ func StreamContainsAllWords(filePath string, words []string) bool {
 	buf := make([]byte, chunkSize)
 	for {
 		if total >= maxBytes {
-			break
+			// Budget reached; we couldn't decide conclusively
+			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+			return false, false
 		}
 		toRead := chunkSize
 		if rem := maxBytes - total; rem < int64(toRead) {
@@ -521,12 +523,12 @@ func StreamContainsAllWords(filePath string, words []string) bool {
 		if n > 0 {
 			combined := append(prev, buf[:n]...)
 			for i, re := range res {
-				if !found[i] && re.Match(combined) {
-					found[i] = true
+				if !foundFlags[i] && re.Match(combined) {
+					foundFlags[i] = true
 					remaining--
 					if remaining == 0 {
 						_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
-						return true
+						return true, true
 					}
 				}
 			}
@@ -542,14 +544,21 @@ func StreamContainsAllWords(filePath string, words []string) bool {
 			total += int64(n)
 		}
 		if rErr == io.EOF {
-			break
+			// End of file; if not all found, the decision is conclusive
+			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+			return false, true
 		}
 		if rErr != nil {
-			break
+			// I/O error; treat as decided false
+			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+			return false, true
 		}
 	}
-	_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
-	return false
+}
+
+func StreamContainsAllWords(filePath string, words []string) bool {
+	found, _ := StreamContainsAllWordsDecided(filePath, words)
+	return found
 }
 
 // CheckFileContainsAllWords checks if a file contains all search words
