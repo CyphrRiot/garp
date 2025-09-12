@@ -203,11 +203,11 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 		const chunkSize = 64 * 1024
 		const overlap = 128
 		const maxBytes = 10 * 1024 * 1024
+		time.Sleep(2 * time.Millisecond)
 		f, openErr := os.Open(path)
 		if openErr != nil {
 			return nil
 		}
-		defer f.Close()
 
 		// Early path for small files: read whole file at once, avoid chunk loop
 		if st, stErr := f.Stat(); stErr == nil && st.Size() <= chunkSize {
@@ -242,6 +242,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 			if found || (!found && st.Size() >= maxBytes) {
 				matches = append(matches, path)
 			}
+			_ = f.Close()
 			return nil
 		}
 
@@ -313,6 +314,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 		if found {
 			matches = append(matches, path)
 		}
+		_ = f.Close()
 		return nil
 	})
 	if err != nil {
@@ -372,6 +374,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 			const maxBytes = 10 * 1024 * 1024
 
 			for p := range paths {
+				time.Sleep(2 * time.Millisecond)
 				f, openErr := os.Open(p)
 				if openErr != nil {
 					continue

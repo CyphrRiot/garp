@@ -96,7 +96,8 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 
 	// Find minimal window containing all words
 	minWindow := len(cleaned)
-	windowStart := -1
+	windowBestLeft := -1
+	windowBestRight := -1
 	wordCount := make(map[int]int)
 	requiredWords := len(searchTerms)
 	currentWords := 0
@@ -112,7 +113,8 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 			windowSize := allMatches[right].pos - allMatches[left].pos
 			if windowSize < minWindow {
 				minWindow = windowSize
-				windowStart = left
+				windowBestLeft = left
+				windowBestRight = right
 			}
 			wordCount[allMatches[left].wordIndex]--
 			if wordCount[allMatches[left].wordIndex] == 0 {
@@ -122,13 +124,14 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 		}
 	}
 
-	if windowStart == -1 {
+	if windowBestLeft == -1 || windowBestRight == -1 {
 		return []string{}
 	}
 
 	// Extract the entire minimal window with padding
-	startPos := allMatches[windowStart].pos
-	endPos := allMatches[windowStart+requiredWords-1].pos + len(searchTerms[allMatches[windowStart+requiredWords-1].wordIndex])
+	startPos := allMatches[windowBestLeft].pos
+	rightTermIdx := allMatches[windowBestRight].wordIndex
+	endPos := allMatches[windowBestRight].pos + len(searchTerms[rightTermIdx])
 
 	// Extract from start with padding to end with padding
 	extractStart := max(0, startPos-50)

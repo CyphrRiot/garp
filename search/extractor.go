@@ -15,6 +15,8 @@ import (
 	"github.com/emersion/go-mbox"
 	"github.com/jhillyerd/enmime"
 	"github.com/ledongthuc/pdf"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 // Extractor defines the interface for extracting text from binary or encoded document formats
@@ -665,8 +667,104 @@ type MSGExtractor struct{}
 
 // ExtractText implements the Extractor interface for MSG files
 func (e *MSGExtractor) ExtractText(data []byte) (string, error) {
-	// For now, return raw content
-	return string(data), nil
+	// 1) Fast path: if mostly printable ASCII, return as-is
+	printable := 0
+	for _, b := range data {
+		if b == 0x09 || b == 0x0a || b == 0x0d || (b >= 0x20 && b <= 0x7e) {
+			printable++
+		}
+	}
+	if len(data) > 0 && float64(printable) >= 0.60*float64(len(data)) {
+		return string(data), nil
+	}
+
+	// 2) Try UTF-16 decode (BOM-aware first, then heuristics for LE/BE)
+	if s, ok := tryDecodeUTF16BestEffort(data); ok {
+		return strings.TrimSpace(s), nil
+	}
+
+	// 3) Fallback: salvage readable ASCII by replacing non-printables with spaces
+	buf := make([]rune, 0, len(data))
+	for _, b := range data {
+		if b == 0x09 || b == 0x0a || b == 0x0d || (b >= 0x20 && b <= 0x7e) {
+			buf = append(buf, rune(b))
+		} else {
+			buf = append(buf, ' ')
+		}
+	}
+	out := regexp.MustCompile(`\s+`).ReplaceAllString(string(buf), " ")
+	return strings.TrimSpace(out), nil
+}
+
+// tryDecodeUTF16BestEffort attempts BOM-aware UTF-16 decoding, then heuristic LE/BE.
+func tryDecodeUTF16BestEffort(b []byte) (string, bool) {
+	// Prefer BOM-aware decode (handles LE/BE automatically if BOM present)
+	{
+		r := transform.NewReader(bytes.NewReader(b), unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewDecoder())
+		s, err := io.ReadAll(r)
+		if err == nil {
+			str := strings.TrimSpace(string(s))
+			if str != "" {
+				return str, true
+			}
+		}
+	}
+
+	// Heuristic: many nulls on odd bytes => likely UTF-16LE without BOM
+	if isLikelyUTF16LE(b) {
+		r := transform.NewReader(bytes.NewReader(b), unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM).NewDecoder())
+		s, err := io.ReadAll(r)
+		if err == nil {
+			str := strings.TrimSpace(string(s))
+			if str != "" {
+				return str, true
+			}
+		}
+	}
+
+	// Heuristic: many nulls on even bytes => likely UTF-16BE without BOM
+	if isLikelyUTF16BE(b) {
+		r := transform.NewReader(bytes.NewReader(b), unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM).NewDecoder())
+		s, err := io.ReadAll(r)
+		if err == nil {
+			str := strings.TrimSpace(string(s))
+			if str != "" {
+				return str, true
+			}
+		}
+	}
+
+	return "", false
+}
+
+func isLikelyUTF16LE(b []byte) bool {
+	if len(b) < 4 {
+		return false
+	}
+	zeros := 0
+	slots := 0
+	for i := 1; i < len(b); i += 2 {
+		slots++
+		if b[i] == 0x00 {
+			zeros++
+		}
+	}
+	return slots > 0 && float64(zeros) >= 0.30*float64(slots)
+}
+
+func isLikelyUTF16BE(b []byte) bool {
+	if len(b) < 4 {
+		return false
+	}
+	zeros := 0
+	slots := 0
+	for i := 0; i < len(b); i += 2 {
+		slots++
+		if b[i] == 0x00 {
+			zeros++
+		}
+	}
+	return slots > 0 && float64(zeros) >= 0.30*float64(slots)
 }
 
 // DOCXExtractor extracts text from .docx files (Office Open XML)
