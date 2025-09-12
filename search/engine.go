@@ -40,7 +40,7 @@ func NewSearchEngine(searchWords, excludeWords []string, fileTypes []string, inc
 		FileTypes:    fileTypes,
 		IncludeCode:  includeCode,
 		Registry:     NewExtractorRegistry(),
-		Distance:     100,
+		Distance:     5000,
 		Silent:       false,
 	}
 }
@@ -189,6 +189,22 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 					continue
 				}
 			}
+		} else {
+			// Single-word presence check
+			word := se.SearchWords[0]
+			if strings.EqualFold(ext, ".msg") {
+				// For .msg, use a streaming presence check to avoid heavy extraction
+				hasAllWords = StreamContainsWord(filePath, word)
+			} else {
+				// For text and other binaries, reuse file presence check
+				hasAllWords, err = CheckFileContainsAllWords(filePath, []string{word}, se.Distance, se.Silent)
+				if err != nil {
+					if !se.Silent {
+						fmt.Printf("Warning: Error checking file %s: %v\n", filePath, err)
+					}
+					continue
+				}
+			}
 		}
 
 		if !hasAllWords {
@@ -307,7 +323,7 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 			FilePath:     filePath,
 			FileSize:     fileSize,
 			Excerpts:     highlightedExcerpts,
-			CleanContent: cleanContent,
+			CleanContent: "",
 		}
 
 		results = append(results, result)

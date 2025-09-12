@@ -360,24 +360,11 @@ func (m model) View() string {
 				// Content matches (always show header)
 				resultsContent.WriteString(infoStyle.Render("📋 Content matches:") + "\n")
 
-				// Dynamically size excerpt to fill the visible box approximately.
-				// Use the computed contentHeight minus a small header allowance (~4 lines).
-				maxLines := innerHeight - 4
-				if maxLines < 3 {
-					maxLines = 3
-				}
-
-				var dyn string
-				if res.CleanContent != "" {
-					dyn = buildDynamicExcerpt(res.CleanContent, m.searchWords, maxLines, innerWidth)
-				}
-
+				// Content matches are rendered from precomputed excerpts only to minimize memory usage.
 				if len(res.Excerpts) > 0 {
 					for _, ex := range res.Excerpts {
 						resultsContent.WriteString(wrapTextWithIndent("", ex, innerWidth) + "\n")
 					}
-				} else if dyn != "" {
-					resultsContent.WriteString(wrapTextWithIndent("", dyn, innerWidth) + "\n")
 				} else {
 					resultsContent.WriteString(infoStyle.Render("  (no excerpt provided)") + "\n")
 				}
@@ -432,7 +419,7 @@ func (m model) View() string {
 	quitInstruction := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("240")).
 		Align(lipgloss.Center).
-		Render("🔚 PRESS 'q' TO QUIT  •  p: previous message")
+		Render("PRESS 🔚 next item • q: to quit • p: previous item")
 
 	// (moved height calculation earlier to size excerpt correctly)
 

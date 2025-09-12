@@ -5,8 +5,7 @@ BINARY_PATH=bin/$(BINARY_NAME)
 GO_FILES=$(shell find . -name "*.go" -type f)
 
 # Version embedding
-VERSION_FILE=VERSION
-VERSION:=$(shell [ -f $(VERSION_FILE) ] && sed -n '1p' $(VERSION_FILE) || echo 0.1)
+VERSION=0.2
 LDFLAGS=-X main.version=$(VERSION)
 
 # Default target

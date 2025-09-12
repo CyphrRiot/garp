@@ -3,7 +3,6 @@ package search
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"unicode"
 )
@@ -65,147 +64,143 @@ func CleanContent(content string) string {
 	return strings.TrimSpace(content)
 }
 
-// ExtractMeaningfulExcerpts extracts clean, readable excerpts around search terms
+// ExtractMeaningfulExcerpts returns targeted, per-match snippets around each term.
+// For each term, we find up to a few matches (whole-word, CI) and expand locally
+// to the nearest sentence boundaries (. ! ?), clamped by a small window so we
+// avoid global segmentation and huge buffers.
 func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts int) []string {
-	// Clean content first
 	cleaned := CleanContent(content)
-
-	// Find all positions of all words
-	type wordMatch struct {
-		pos       int
-		wordIndex int
+	if maxExcerpts <= 0 {
+		maxExcerpts = 3
 	}
-	var allMatches []wordMatch
-	for i, term := range searchTerms {
-		pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(term))
-		regex := regexp.MustCompile(pattern)
-		indexes := regex.FindAllStringIndex(cleaned, -1)
-		for _, idx := range indexes {
-			allMatches = append(allMatches, wordMatch{pos: idx[0], wordIndex: i})
-		}
-	}
-
-	if len(allMatches) < len(searchTerms) {
+	if len(cleaned) == 0 || len(searchTerms) == 0 {
 		return []string{}
 	}
 
-	// Sort by position
-	sort.Slice(allMatches, func(i, j int) bool {
-		return allMatches[i].pos < allMatches[j].pos
-	})
-
-	// Find minimal window containing all words
-	minWindow := len(cleaned)
-	windowBestLeft := -1
-	windowBestRight := -1
-	wordCount := make(map[int]int)
-	requiredWords := len(searchTerms)
-	currentWords := 0
-	left := 0
-
-	for right := 0; right < len(allMatches); right++ {
-		wordCount[allMatches[right].wordIndex]++
-		if wordCount[allMatches[right].wordIndex] == 1 {
-			currentWords++
-		}
-
-		for currentWords == requiredWords && left <= right {
-			windowSize := allMatches[right].pos - allMatches[left].pos
-			if windowSize < minWindow {
-				minWindow = windowSize
-				windowBestLeft = left
-				windowBestRight = right
-			}
-			wordCount[allMatches[left].wordIndex]--
-			if wordCount[allMatches[left].wordIndex] == 0 {
-				currentWords--
-			}
-			left++
-		}
-	}
-
-	if windowBestLeft == -1 || windowBestRight == -1 {
-		return []string{}
-	}
-
-	// Extract the entire minimal window with padding
-	startPos := allMatches[windowBestLeft].pos
-	rightTermIdx := allMatches[windowBestRight].wordIndex
-	endPos := allMatches[windowBestRight].pos + len(searchTerms[rightTermIdx])
-
-	// Extract from start with padding to end with padding
-	extractStart := max(0, startPos-50)
-	extractEnd := min(len(cleaned), endPos+50)
-
-	// Find word boundaries
-	for extractStart > 0 && cleaned[extractStart] != ' ' && cleaned[extractStart] != '\n' {
-		extractStart--
-	}
-	for extractEnd < len(cleaned) && cleaned[extractEnd] != ' ' && cleaned[extractEnd] != '\n' {
-		extractEnd++
-	}
-
-	excerpt := strings.TrimSpace(cleaned[extractStart:extractEnd])
-
-	// Clean up
-	excerpt = strings.ReplaceAll(excerpt, "\n", " ")
-	excerpt = strings.ReplaceAll(excerpt, "\t", " ")
-	excerpt = regexp.MustCompile(`\s+`).ReplaceAllString(excerpt, " ")
-
-	if len(excerpt) >= 20 && hasLetters(excerpt) {
-		highlighted := HighlightTerms(excerpt, searchTerms)
-		return []string{highlighted}
-	}
-
-	// Fallback: if precise excerpt extraction fails, expand to sentence boundaries
-	// around the first occurrence of any search term for richer context.
-	for _, term := range searchTerms {
-		if strings.TrimSpace(term) == "" {
+	// Build regexes for each term (whole-word, case-insensitive)
+	termRE := make([]*regexp.Regexp, 0, len(searchTerms))
+	for _, t := range searchTerms {
+		tt := strings.TrimSpace(t)
+		if tt == "" {
 			continue
 		}
-		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(term) + `\b`)
-		loc := re.FindStringIndex(cleaned)
-		if loc != nil {
-			// Find previous sentence boundary (. ! ?)
-			left := loc[0]
-			for left > 0 && cleaned[left] != '.' && cleaned[left] != '!' && cleaned[left] != '?' {
+		termRE = append(termRE, regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(tt)+`\b`))
+	}
+	if len(termRE) == 0 {
+		return []string{}
+	}
+
+	// Clamp window for scanning sentence boundaries around each match
+	const maxContext = 800 // total max chars considered per match window
+	excerpts := make([]string, 0, maxExcerpts)
+	seen := make(map[string]struct{})
+
+	// Ensure at least one sentence per term (when possible)
+	for _, re := range termRE {
+		if len(excerpts) >= maxExcerpts {
+			break
+		}
+		locs := re.FindAllStringIndex(cleaned, 3) // up to 3 matches per term
+		for _, loc := range locs {
+			if len(excerpts) >= maxExcerpts {
+				break
+			}
+			start := loc[0]
+			end := loc[1]
+
+			// Find local sentence boundaries with clamped scan
+			left := start
+			limitLeft := left - maxContext/2
+			if limitLeft < 0 {
+				limitLeft = 0
+			}
+			for left > limitLeft && cleaned[left] != '.' && cleaned[left] != '!' && cleaned[left] != '?' {
 				left--
 			}
 			if left > 0 {
-				// Move to the character after punctuation, skip whitespace
 				left++
-				for left < loc[0] && (cleaned[left] == ' ' || cleaned[left] == '\n' || cleaned[left] == '\t') {
-					left++
-				}
 			} else {
-				left = 0
+				left = limitLeft
 			}
 
-			// Find next sentence boundary (. ! ?)
-			right := loc[1]
-			for right < len(cleaned) && cleaned[right] != '.' && cleaned[right] != '!' && cleaned[right] != '?' {
+			right := end
+			limitRight := right + maxContext/2
+			if limitRight > len(cleaned) {
+				limitRight = len(cleaned)
+			}
+			for right < limitRight && cleaned[right] != '.' && cleaned[right] != '!' && cleaned[right] != '?' {
 				right++
 			}
 			if right < len(cleaned) {
-				// Include the punctuation
 				right++
 			} else {
-				right = len(cleaned)
+				right = limitRight
 			}
 
-			// Ensure a minimum context window if sentences are very short
-			if right-left < 160 {
-				left = max(0, left-80)
-				right = min(len(cleaned), right+80)
+			// Build sentence snippet and normalize whitespace
+			ex := strings.TrimSpace(cleaned[left:right])
+			if ex == "" {
+				continue
 			}
+			ex = strings.ReplaceAll(ex, "\n", " ")
+			ex = strings.ReplaceAll(ex, "\t", " ")
+			ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
 
-			excerpt := strings.TrimSpace(cleaned[left:right])
-			excerpt = strings.ReplaceAll(excerpt, "\n", " ")
-			excerpt = strings.ReplaceAll(excerpt, "\t", " ")
-			excerpt = regexp.MustCompile(`\s+`).ReplaceAllString(excerpt, " ")
-			if len(excerpt) > 0 && hasLetters(excerpt) {
-				return []string{HighlightTerms(excerpt, searchTerms)}
+			if _, ok := seen[ex]; ok {
+				continue
 			}
+			seen[ex] = struct{}{}
+			excerpts = append(excerpts, ex)
+		}
+	}
+
+	if len(excerpts) > 0 {
+		return excerpts
+	}
+
+	// Fallback: find the first occurrence of any term and expand within a small window
+	for _, re := range termRE {
+		loc := re.FindStringIndex(cleaned)
+		if loc == nil {
+			continue
+		}
+		start := loc[0]
+		end := loc[1]
+
+		left := start
+		limitLeft := left - maxContext/2
+		if limitLeft < 0 {
+			limitLeft = 0
+		}
+		for left > limitLeft && cleaned[left] != '.' && cleaned[left] != '!' && cleaned[left] != '?' {
+			left--
+		}
+		if left > 0 {
+			left++
+		} else {
+			left = limitLeft
+		}
+
+		right := end
+		limitRight := right + maxContext/2
+		if limitRight > len(cleaned) {
+			limitRight = len(cleaned)
+		}
+		for right < limitRight && cleaned[right] != '.' && cleaned[right] != '!' && cleaned[right] != '?' {
+			right++
+		}
+		if right < len(cleaned) {
+			right++
+		} else {
+			right = limitRight
+		}
+
+		ex := strings.TrimSpace(cleaned[left:right])
+		ex = strings.ReplaceAll(ex, "\n", " ")
+		ex = strings.ReplaceAll(ex, "\t", " ")
+		ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
+		if ex != "" {
+			return []string{ex}
 		}
 	}
 
@@ -230,6 +225,7 @@ func containsAnySearchTerm(text string, searchTerms []string) bool {
 }
 
 // splitIntoSentences splits content into sentences for better excerpt extraction
+
 func splitIntoSentences(content string) []string {
 	// Clean content first
 	cleaned := CleanContent(content)

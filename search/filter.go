@@ -201,8 +201,11 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 
 		// Stream up to maxBytes looking for the first word
 		const chunkSize = 64 * 1024
-		const overlap = 128
 		const maxBytes = 10 * 1024 * 1024
+		overlap := 32
+		if l := len(wLower) - 1; l > overlap {
+			overlap = l
+		}
 		time.Sleep(2 * time.Millisecond)
 		f, openErr := os.Open(path)
 		if openErr != nil {
@@ -212,34 +215,8 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 		// Early path for small files: read whole file at once, avoid chunk loop
 		if st, stErr := f.Stat(); stErr == nil && st.Size() <= chunkSize {
 			data, _ := io.ReadAll(f)
-			lower := strings.ToLower(string(data))
-			isWordChar := func(c byte) bool {
-				return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
-			}
-			found := false
-			pos := 0
-			for {
-				i := strings.Index(lower[pos:], wLower)
-				if i == -1 {
-					break
-				}
-				i += pos
-				var before byte = ' '
-				if i > 0 {
-					before = lower[i-1]
-				}
-				j := i + len(wLower)
-				var after byte = ' '
-				if j < len(lower) {
-					after = lower[j]
-				}
-				if !isWordChar(before) && !isWordChar(after) {
-					found = true
-					break
-				}
-				pos = i + 1
-			}
-			if found || (!found && st.Size() >= maxBytes) {
+			found := asciiIndexWholeWordCI(data, []byte(wLower))
+			if found {
 				matches = append(matches, path)
 			}
 			_ = f.Close()
@@ -261,36 +238,8 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 			n, rErr := f.Read(buf[:toRead])
 			if n > 0 {
 				combined := append(prev, buf[:n]...)
-				// Fast ASCII whole-word, case-insensitive scan (avoids regex cost)
-				lower := strings.ToLower(string(combined))
-
-				isWordChar := func(c byte) bool {
-					return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
-				}
-
-				pos := 0
-				for {
-					i := strings.Index(lower[pos:], wLower)
-					if i == -1 {
-						break
-					}
-					i += pos
-
-					var before byte = ' '
-					if i > 0 {
-						before = lower[i-1]
-					}
-					j := i + len(wLower)
-					var after byte = ' '
-					if j < len(lower) {
-						after = lower[j]
-					}
-
-					if !isWordChar(before) && !isWordChar(after) {
-						found = true
-						break
-					}
-					pos = i + 1
+				if asciiIndexWholeWordCI(combined, []byte(wLower)) {
+					found = true
 				}
 				if n >= overlap {
 					prev = append(prev[:0], buf[n-overlap:n]...)
@@ -370,8 +319,11 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		go func() {
 			defer wg.Done()
 			const chunkSize = 64 * 1024
-			const overlap = 128
 			const maxBytes = 10 * 1024 * 1024
+			overlap := 32
+			if l := len(wLower) - 1; l > overlap {
+				overlap = l
+			}
 
 			for p := range paths {
 				time.Sleep(2 * time.Millisecond)
@@ -385,33 +337,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 					data, _ := io.ReadAll(f)
 					_ = f.Close()
 
-					lower := strings.ToLower(string(data))
-					isWordChar := func(c byte) bool {
-						return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
-					}
-					found := false
-					pos := 0
-					for {
-						i := strings.Index(lower[pos:], wLower)
-						if i == -1 {
-							break
-						}
-						i += pos
-						var before byte = ' '
-						if i > 0 {
-							before = lower[i-1]
-						}
-						j := i + len(wLower)
-						var after byte = ' '
-						if j < len(lower) {
-							after = lower[j]
-						}
-						if !isWordChar(before) && !isWordChar(after) {
-							found = true
-							break
-						}
-						pos = i + 1
-					}
+					found := asciiIndexWholeWordCI(data, []byte(wLower))
 					if found {
 						mu.Lock()
 						matches = append(matches, p)
@@ -435,33 +361,9 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 					}
 					n, rErr := f.Read(buf[:toRead])
 					if n > 0 {
-						combined := append(prev, buf[:n]...)
-						// Fast ASCII whole-word, case-insensitive scan (avoids regex cost)
-						lower := strings.ToLower(string(combined))
-						isWordChar := func(c byte) bool {
-							return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
-						}
-						pos := 0
-						for {
-							i := strings.Index(lower[pos:], wLower)
-							if i == -1 {
-								break
-							}
-							i += pos
-							var before byte = ' '
-							if i > 0 {
-								before = lower[i-1]
-							}
-							j := i + len(wLower)
-							var after byte = ' '
-							if j < len(lower) {
-								after = lower[j]
-							}
-							if !isWordChar(before) && !isWordChar(after) {
-								found = true
-								break
-							}
-							pos = i + 1
+						combined := append(prev, buf[:toRead]...)
+						if asciiIndexWholeWordCI(combined, []byte(wLower)) {
+							found = true
 						}
 						if n >= overlap {
 							prev = append(prev[:0], buf[n-overlap:n]...)
@@ -710,6 +612,54 @@ func StreamContainsWord(filePath string, word string) bool {
 		}
 		if rErr != nil {
 			break
+		}
+	}
+	return false
+}
+
+// asciiIndexWholeWordCI performs a fast ASCII, case-insensitive, whole-word search.
+// buf is arbitrary bytes; wordLower must be all-lowercase ASCII.
+func asciiIndexWholeWordCI(buf []byte, wordLower []byte) bool {
+	if len(wordLower) == 0 || len(buf) < len(wordLower) {
+		return false
+	}
+	isWordChar := func(b byte) bool {
+		if b >= 'A' && b <= 'Z' {
+			return true
+		}
+		if b >= 'a' && b <= 'z' {
+			return true
+		}
+		if b >= '0' && b <= '9' {
+			return true
+		}
+		return b == '_'
+	}
+	wl := len(wordLower)
+	limit := len(buf) - wl
+	for i := 0; i <= limit; i++ {
+		// whole-word boundary check
+		if i > 0 && isWordChar(buf[i-1]) {
+			continue
+		}
+		if i+wl < len(buf) && isWordChar(buf[i+wl]) {
+			continue
+		}
+		// compare case-insensitive ASCII
+		ok := true
+		for j := 0; j < wl; j++ {
+			b := buf[i+j]
+			// to lower ASCII
+			if b >= 'A' && b <= 'Z' {
+				b |= 0x20
+			}
+			if b != wordLower[j] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
 		}
 	}
 	return false
