@@ -3,6 +3,7 @@ package search
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -13,6 +14,8 @@ type SearchResult struct {
 	FileSize     int64
 	Excerpts     []string
 	CleanContent string
+	EmailDate    string
+	EmailSubject string
 }
 
 // ProgressFunc is an optional callback to report progress like: processed, total, path
@@ -154,6 +157,12 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 
 		// Removed .msg prefilter skip to avoid false negatives
 
+		// Fast prefilter for text files: require presence of the second word before heavy checks
+		if len(se.SearchWords) > 1 && !IsBinaryFormat(filePath) {
+			if !StreamContainsWord(filePath, se.SearchWords[1]) {
+				continue
+			}
+		}
 		// Check if file contains all search words
 		hasAllWords := true
 		if len(se.SearchWords) > 1 {
@@ -192,11 +201,33 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 		} else {
 			// Single-word presence check
 			word := se.SearchWords[0]
-			if strings.EqualFold(ext, ".msg") {
-				// For .msg, use a streaming presence check to avoid heavy extraction
-				hasAllWords = StreamContainsWord(filePath, word)
+			if IsBinaryFormat(filePath) {
+				// For binaries (including .eml/.msg), extract and run whole-word check on cleaned text
+				rawContent, _, err := GetFileContent(filePath)
+				if err != nil {
+					if !se.Silent {
+						fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
+					}
+					continue
+				}
+				ext := filepath.Ext(filePath)
+				if extractor, exists := se.Registry.GetExtractor(ext); exists {
+					extractedText, err := extractor.ExtractText([]byte(rawContent))
+					if err != nil {
+						if !se.Silent {
+							fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, err)
+						}
+						continue
+					}
+					hasAllWords = CheckTextContainsAllWords(CleanContent(extractedText), []string{word}, se.Distance)
+				} else {
+					if !se.Silent {
+						fmt.Printf("Warning: No extractor for %s\n", ext)
+					}
+					continue
+				}
 			} else {
-				// For text and other binaries, reuse file presence check
+				// Text files: quick presence check
 				hasAllWords, err = CheckFileContainsAllWords(filePath, []string{word}, se.Distance, se.Silent)
 				if err != nil {
 					if !se.Silent {
@@ -273,6 +304,7 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 		var content string
 		var fileSize int64
 		var err error
+		var emailDate, emailSubject string
 
 		if IsBinaryFormat(filePath) {
 			// For binary files, extract text
@@ -285,6 +317,17 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 			}
 			fileSize = size
 			ext := filepath.Ext(filePath)
+
+			// Best-effort email metadata for EML/MSG from raw headers (without heavy parsing)
+			if strings.EqualFold(ext, ".eml") || strings.EqualFold(ext, ".msg") {
+				if m := regexp.MustCompile(`(?mi)^Date:\s*(.+)$`).FindStringSubmatch(rawContent); m != nil {
+					emailDate = strings.TrimSpace(m[1])
+				}
+				if m := regexp.MustCompile(`(?mi)^Subject:\s*(.+)$`).FindStringSubmatch(rawContent); m != nil {
+					emailSubject = strings.TrimSpace(m[1])
+				}
+			}
+
 			if extractor, exists := se.Registry.GetExtractor(ext); exists {
 				content, err = extractor.ExtractText([]byte(rawContent))
 				if err != nil {
@@ -324,6 +367,8 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 			FileSize:     fileSize,
 			Excerpts:     highlightedExcerpts,
 			CleanContent: "",
+			EmailDate:    emailDate,
+			EmailSubject: emailSubject,
 		}
 
 		results = append(results, result)

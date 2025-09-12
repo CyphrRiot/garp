@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"find-words/config"
 )
 
@@ -28,7 +30,7 @@ func CheckTextContainsAllWords(text string, words []string, distance int) bool {
 
 	// Single-term case: just check presence quickly
 	if len(words) == 1 {
-		pattern := fmt.Sprintf(`\b%s\b`, regexp.QuoteMeta(strings.ToLower(words[0])))
+		pattern := fmt.Sprintf(`\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(strings.ToLower(words[0])))
 		regex := regexp.MustCompile(pattern)
 		return regex.FindStringIndex(contentStr) != nil
 	}
@@ -40,7 +42,7 @@ func CheckTextContainsAllWords(text string, words []string, distance int) bool {
 	}
 	var matches []match
 	for i, word := range words {
-		pattern := fmt.Sprintf(`\b%s\b`, regexp.QuoteMeta(strings.ToLower(word)))
+		pattern := fmt.Sprintf(`\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(strings.ToLower(word)))
 		regex := regexp.MustCompile(pattern)
 		indexes := regex.FindAllStringIndex(contentStr, -1)
 		for _, idx := range indexes {
@@ -172,6 +174,8 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 		".docx": true,
 		".odt":  true,
 		".msg":  true,
+		".eml":  true,
+		".mbox": true,
 	}
 	matches := make([]string, 0, 128)
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
@@ -219,6 +223,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 			if found {
 				matches = append(matches, path)
 			}
+			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 			_ = f.Close()
 			return nil
 		}
@@ -263,6 +268,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 		if found {
 			matches = append(matches, path)
 		}
+		_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 		_ = f.Close()
 		return nil
 	})
@@ -302,6 +308,8 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		".docx": true,
 		".odt":  true,
 		".msg":  true,
+		".eml":  true,
+		".mbox": true,
 	}
 
 	// Results and synchronization
@@ -335,6 +343,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 				// Early path for small files: read whole file at once, avoid chunk loop
 				if st, stErr := f.Stat(); stErr == nil && st.Size() <= chunkSize {
 					data, _ := io.ReadAll(f)
+					_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 					_ = f.Close()
 
 					found := asciiIndexWholeWordCI(data, []byte(wLower))
@@ -384,6 +393,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 					}
 				}
 
+				_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 				_ = f.Close()
 
 				if found || (!found && readTotal >= maxBytes) {
@@ -449,8 +459,106 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 	return matches, nil
 }
 
+// StreamContainsAllWords streams a file and returns true if all words are present (unordered, plural-aware, CI).
+func StreamContainsAllWords(filePath string, words []string) bool {
+	if len(words) == 0 {
+		return true
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Build plural-aware whole-word regexes (?i)\b(?:word(?:es|s)?)\b
+	res := make([]*regexp.Regexp, 0, len(words))
+	for _, w := range words {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
+		res = append(res, regexp.MustCompile(pat))
+	}
+	if len(res) == 0 {
+		return true
+	}
+
+	const chunkSize = 64 * 1024
+	const overlap = 128
+
+	// Align with GetFileContent limits
+	stat, statErr := f.Stat()
+	var maxBytes int64
+	if statErr == nil {
+		switch {
+		case stat.Size() > 50*1024*1024:
+			maxBytes = 10 * 1024 * 1024
+		case stat.Size() > 10*1024*1024:
+			maxBytes = 5 * 1024 * 1024
+		default:
+			maxBytes = stat.Size()
+		}
+	} else {
+		maxBytes = 10 * 1024 * 1024
+	}
+
+	found := make([]bool, len(res))
+	remaining := len(res)
+
+	var total int64
+	prev := make([]byte, 0, overlap)
+	buf := make([]byte, chunkSize)
+	for {
+		if total >= maxBytes {
+			break
+		}
+		toRead := chunkSize
+		if rem := maxBytes - total; rem < int64(toRead) {
+			toRead = int(rem)
+		}
+		n, rErr := f.Read(buf[:toRead])
+		if n > 0 {
+			combined := append(prev, buf[:n]...)
+			for i, re := range res {
+				if !found[i] && re.Match(combined) {
+					found[i] = true
+					remaining--
+					if remaining == 0 {
+						_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+						return true
+					}
+				}
+			}
+			if n >= overlap {
+				prev = append(prev[:0], buf[n-overlap:n]...)
+			} else {
+				if len(combined) >= overlap {
+					prev = append(prev[:0], combined[len(combined)-overlap:]...)
+				} else {
+					prev = append(prev[:0], combined...)
+				}
+			}
+			total += int64(n)
+		}
+		if rErr == io.EOF {
+			break
+		}
+		if rErr != nil {
+			break
+		}
+	}
+	_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+	return false
+}
+
 // CheckFileContainsAllWords checks if a file contains all search words
 func CheckFileContainsAllWords(filePath string, words []string, distance int, silent bool) (bool, error) {
+	// Fast prefilter: require presence of all words before full distance check
+	if !StreamContainsAllWords(filePath, words) {
+		return false, nil
+	}
+
 	content, _, err := GetFileContent(filePath)
 	if err != nil {
 		return false, err
@@ -551,7 +659,7 @@ func FormatFileSize(size int64) string {
 
 // StreamContainsWord checks if a file contains a given word using streaming read
 func StreamContainsWord(filePath string, word string) bool {
-	pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(word))
+	pattern := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(word))
 	re := regexp.MustCompile(pattern)
 
 	f, err := os.Open(filePath)
@@ -594,6 +702,7 @@ func StreamContainsWord(filePath string, word string) bool {
 		if n > 0 {
 			combined := append(prev, buf[:n]...)
 			if re.Match(combined) {
+				_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 				return true
 			}
 			if n >= overlap {
@@ -614,52 +723,70 @@ func StreamContainsWord(filePath string, word string) bool {
 			break
 		}
 	}
+	_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 	return false
 }
 
-// asciiIndexWholeWordCI performs a fast ASCII, case-insensitive, whole-word search.
-// buf is arbitrary bytes; wordLower must be all-lowercase ASCII.
+// asciiIndexWholeWordCI performs a fast ASCII, case-insensitive, whole-word search
+// with basic plural-awareness: matches base, base+s, or base+es.
 func asciiIndexWholeWordCI(buf []byte, wordLower []byte) bool {
 	if len(wordLower) == 0 || len(buf) < len(wordLower) {
 		return false
 	}
 	isWordChar := func(b byte) bool {
-		if b >= 'A' && b <= 'Z' {
+		switch {
+		case b >= 'A' && b <= 'Z':
 			return true
-		}
-		if b >= 'a' && b <= 'z' {
+		case b >= 'a' && b <= 'z':
 			return true
-		}
-		if b >= '0' && b <= '9' {
+		case b >= '0' && b <= '9':
 			return true
+		default:
+			return b == '_'
 		}
-		return b == '_'
 	}
+	toLower := func(b byte) byte {
+		if b >= 'A' && b <= 'Z' {
+			return b | 0x20
+		}
+		return b
+	}
+
 	wl := len(wordLower)
 	limit := len(buf) - wl
 	for i := 0; i <= limit; i++ {
-		// whole-word boundary check
+		// left boundary
 		if i > 0 && isWordChar(buf[i-1]) {
 			continue
 		}
-		if i+wl < len(buf) && isWordChar(buf[i+wl]) {
-			continue
-		}
-		// compare case-insensitive ASCII
-		ok := true
-		for j := 0; j < wl; j++ {
-			b := buf[i+j]
-			// to lower ASCII
-			if b >= 'A' && b <= 'Z' {
-				b |= 0x20
-			}
-			if b != wordLower[j] {
-				ok = false
+
+		// try exact base match
+		j := 0
+		for ; j < wl; j++ {
+			if toLower(buf[i+j]) != wordLower[j] {
 				break
 			}
 		}
-		if ok {
-			return true
+		if j == wl {
+			// check boundary after base
+			end := i + wl
+			if end >= len(buf) || !isWordChar(buf[end]) {
+				return true
+			}
+			// try 's' plural
+			if end < len(buf) && toLower(buf[end]) == 's' {
+				endS := end + 1
+				if endS >= len(buf) || !isWordChar(buf[endS]) {
+					return true
+				}
+			}
+			// try 'es' plural
+			if end+1 < len(buf) && toLower(buf[end]) == 'e' && toLower(buf[end+1]) == 's' {
+				endES := end + 2
+				if endES >= len(buf) || !isWordChar(buf[endES]) {
+					return true
+				}
+			}
 		}
 	}
 	return false

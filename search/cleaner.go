@@ -65,11 +65,18 @@ func CleanContent(content string) string {
 }
 
 // ExtractMeaningfulExcerpts returns targeted, per-match snippets around each term.
-// For each term, we find up to a few matches (whole-word, CI) and expand locally
-// to the nearest sentence boundaries (. ! ?), clamped by a small window so we
-// avoid global segmentation and huge buffers.
+// We extract tight, local windows around each match with email-aware boundaries,
+// paragraph fallbacks, and punctuation-aware sentence ends. We avoid global scans.
 func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts int) []string {
-	cleaned := CleanContent(content)
+	// Line-preserving clean for boundary finding: remove heavy markup/noise but keep newlines
+	prep := cssRegex.ReplaceAllString(content, "")
+	prep = jsRegex.ReplaceAllString(prep, "")
+	prep = htmlTagRegex.ReplaceAllString(prep, " ")
+	prep = htmlEntityRegex.ReplaceAllString(prep, " ")
+	prep = controlCharRegex.ReplaceAllString(prep, "")
+	prep = junkSymbolsRegex.ReplaceAllString(prep, "")
+	cleaned := prep
+
 	if maxExcerpts <= 0 {
 		maxExcerpts = 3
 	}
@@ -108,19 +115,44 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 			start := loc[0]
 			end := loc[1]
 
-			// Find local sentence boundaries with clamped scan
+			// Find local sentence boundaries with clamped scan (email-aware + punctuation)
 			left := start
 			limitLeft := left - maxContext/2
 			if limitLeft < 0 {
 				limitLeft = 0
 			}
-			for left > limitLeft && cleaned[left] != '.' && cleaned[left] != '!' && cleaned[left] != '?' {
+			// Expand left until punctuation or email header boundary
+			for left > limitLeft {
+				if cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?' {
+					break
+				}
+				// Stop at email header lines (From:, To:, Subject:, Date:, etc.)
+				if cleaned[left] == '\n' {
+					ls := left + 1
+					le := ls
+					for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+						le++
+					}
+					if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+						break
+					}
+				}
 				left--
 			}
-			if left > 0 {
+			if left > 0 && (cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?') {
 				left++
-			} else {
-				left = limitLeft
+			} else if left <= limitLeft {
+				// Paragraph fallback: last blank line in window
+				if idx := strings.LastIndex(cleaned[limitLeft:start], "\n\n"); idx != -1 {
+					left = limitLeft + idx + 2
+				} else {
+					// Single newline fallback
+					if idx := strings.LastIndex(cleaned[limitLeft:start], "\n"); idx != -1 {
+						left = limitLeft + idx + 1
+					} else {
+						left = limitLeft
+					}
+				}
 			}
 
 			right := end
@@ -128,13 +160,34 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 			if limitRight > len(cleaned) {
 				limitRight = len(cleaned)
 			}
-			for right < limitRight && cleaned[right] != '.' && cleaned[right] != '!' && cleaned[right] != '?' {
+			// Expand right until punctuation or email header boundary
+			for right < limitRight {
+				if cleaned[right] == '.' || cleaned[right] == '!' || cleaned[right] == '?' {
+					right++
+					break
+				}
+				// Stop at email header lines (From:, To:, Subject:, Date:, etc.)
+				if cleaned[right] == '\n' {
+					ls := right + 1
+					le := ls
+					for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+						le++
+					}
+					if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+						break
+					}
+				}
 				right++
 			}
-			if right < len(cleaned) {
-				right++
-			} else {
-				right = limitRight
+			if right >= limitRight {
+				// Paragraph fallback: next blank line in window
+				if idx := strings.Index(cleaned[end:limitRight], "\n\n"); idx != -1 {
+					right = end + idx
+				} else if idx := strings.Index(cleaned[end:limitRight], "\n"); idx != -1 {
+					right = end + idx
+				} else {
+					right = limitRight
+				}
 			}
 
 			// Build sentence snippet and normalize whitespace
@@ -172,13 +225,32 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 		if limitLeft < 0 {
 			limitLeft = 0
 		}
-		for left > limitLeft && cleaned[left] != '.' && cleaned[left] != '!' && cleaned[left] != '?' {
+		for left > limitLeft {
+			if cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?' {
+				break
+			}
+			if cleaned[left] == '\n' {
+				ls := left + 1
+				le := ls
+				for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+					le++
+				}
+				if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+					break
+				}
+			}
 			left--
 		}
-		if left > 0 {
+		if left > 0 && (cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?') {
 			left++
-		} else {
-			left = limitLeft
+		} else if left <= limitLeft {
+			if idx := strings.LastIndex(cleaned[limitLeft:start], "\n\n"); idx != -1 {
+				left = limitLeft + idx + 2
+			} else if idx := strings.LastIndex(cleaned[limitLeft:start], "\n"); idx != -1 {
+				left = limitLeft + idx + 1
+			} else {
+				left = limitLeft
+			}
 		}
 
 		right := end
@@ -186,13 +258,31 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 		if limitRight > len(cleaned) {
 			limitRight = len(cleaned)
 		}
-		for right < limitRight && cleaned[right] != '.' && cleaned[right] != '!' && cleaned[right] != '?' {
+		for right < limitRight {
+			if cleaned[right] == '.' || cleaned[right] == '!' || cleaned[right] == '?' {
+				right++
+				break
+			}
+			if cleaned[right] == '\n' {
+				ls := right + 1
+				le := ls
+				for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+					le++
+				}
+				if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+					break
+				}
+			}
 			right++
 		}
-		if right < len(cleaned) {
-			right++
-		} else {
-			right = limitRight
+		if right >= limitRight {
+			if idx := strings.Index(cleaned[end:limitRight], "\n\n"); idx != -1 {
+				right = end + idx
+			} else if idx := strings.Index(cleaned[end:limitRight], "\n"); idx != -1 {
+				right = end + idx
+			} else {
+				right = limitRight
+			}
 		}
 
 		ex := strings.TrimSpace(cleaned[left:right])
@@ -337,21 +427,23 @@ func isJunkLine(line string) bool {
 	return false
 }
 
-// containsWholeWord checks if text contains a whole word (case insensitive)
+// containsWholeWord checks if text contains a whole word (case insensitive, plural-aware)
 func containsWholeWord(text, word string) bool {
-	pattern := fmt.Sprintf(`\b%s\b`, regexp.QuoteMeta(word))
+	// Match base, base+s, or base+es
+	pattern := fmt.Sprintf(`\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(word))
 	regex := regexp.MustCompile(`(?i)` + pattern)
 	return regex.MatchString(text)
 }
 
-// HighlightTerms highlights search terms in text with color codes
+// HighlightTerms highlights search terms in text with color codes (plural-aware)
 func HighlightTerms(text string, searchTerms []string) string {
 	const HI = "\033[1;31m" // bold red for stronger, more visible highlighting
 	const NC = "\033[0m"
 
 	result := text
 	for _, term := range searchTerms {
-		pattern := fmt.Sprintf(`\b%s\b`, regexp.QuoteMeta(term))
+		// Highlight base, base+s, or base+es as whole words
+		pattern := fmt.Sprintf(`\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(term))
 		regex := regexp.MustCompile(`(?i)` + pattern)
 		result = regex.ReplaceAllStringFunc(result, func(match string) string {
 			return HI + match + NC

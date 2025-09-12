@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ type model struct {
 	searchWords  []string
 	excludeWords []string
 	includeCode  bool
+	distance     int
 
 	// UI state
 	confirmSelected string // "yes" or "no"
@@ -126,6 +128,10 @@ func (m model) runSearch() tea.Cmd {
 		m.includeCode,
 	)
 	se.Silent = true
+	// Override default proximity window if provided
+	if m.distance > 0 {
+		se.Distance = m.distance
+	}
 	// Stream progress from the engine to the TUI header
 	se.OnProgress = func(processed, total int, path string) {
 		select {
@@ -353,6 +359,18 @@ func (m model) View() string {
 				// Path and size
 				abs := search.GetAbsolutePath(res.FilePath)
 				resultsContent.WriteString(infoStyle.Render(wrapTextWithIndent("🔗 ", abs, innerWidth)) + "\n")
+				// Email metadata (if available)
+				if res.EmailDate != "" || res.EmailSubject != "" {
+					var parts []string
+					if res.EmailDate != "" {
+						parts = append(parts, "Date: "+res.EmailDate)
+					}
+					if res.EmailSubject != "" {
+						parts = append(parts, "Subject: "+res.EmailSubject)
+					}
+					meta := strings.Join(parts, " • ")
+					resultsContent.WriteString(infoStyle.Render(wrapTextWithIndent("🛈 ", meta, innerWidth)) + "\n")
+				}
 				if res.FileSize > 0 {
 					resultsContent.WriteString(infoStyle.Render(fmt.Sprintf("📦 Size: %s", search.FormatFileSize(res.FileSize))) + "\n")
 				}
@@ -714,6 +732,7 @@ type Arguments struct {
 	SearchWords  []string
 	ExcludeWords []string
 	IncludeCode  bool
+	Distance     int
 }
 
 // parseArguments parses command line args
@@ -722,15 +741,27 @@ func parseArguments(args []string) *Arguments {
 		SearchWords:  []string{},
 		ExcludeWords: []string{},
 		IncludeCode:  false,
+		Distance:     0,
 	}
 
 	parsingExcludes := false
+	expectDistance := false
+
 	for _, a := range args {
+		if expectDistance {
+			if n, err := strconv.Atoi(a); err == nil && n > 0 {
+				res.Distance = n
+			}
+			expectDistance = false
+			continue
+		}
 		switch a {
 		case "--code":
 			res.IncludeCode = true
 		case "--not":
 			parsingExcludes = true
+		case "--distance", "-distance":
+			expectDistance = true
 		case "--help", "-h":
 			showUsage()
 			os.Exit(0)
@@ -753,9 +784,8 @@ func showUsage() {
 	fmt.Println(headerStyle.Render("garp - High-Performance Document Search Tool (Pure Go)"))
 	fmt.Println()
 	fmt.Printf("%sUSAGE:%s\n", subHeaderStyle.Render("USAGE:"), "")
-	fmt.Printf("  garp word1 word2 word3 [...]\n")
-	fmt.Printf("  garp --code word1 word2 [...]\n")
-	fmt.Printf("  garp word1 word2 --not excludeword [...]\n")
+	fmt.Printf("  garp [--code] [--distance N] word1 word2 [...]\n")
+	fmt.Printf("  garp [--code] [--distance N] word1 word2 --not excludeword [...]\n")
 	fmt.Println()
 }
 
@@ -789,6 +819,7 @@ func main() {
 		searchWords:     args.SearchWords,
 		excludeWords:    args.ExcludeWords,
 		includeCode:     args.IncludeCode,
+		distance:        args.Distance,
 		confirmSelected: "yes",
 		memUsageText:    "",
 		progressText:    "",
