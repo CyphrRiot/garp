@@ -6,7 +6,7 @@ GO_FILES=$(shell find . -name "*.go" -type f)
 
 # Version embedding
 VERSION=0.3
-LDFLAGS=-X main.version=$(VERSION)
+LDFLAGS=-X find-words/app.version=$(VERSION)
 
 # Default target
 all: build
@@ -23,7 +23,7 @@ $(BINARY_PATH): $(GO_FILES)
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -rf bin
+	rm -rf bin/*
 	@echo "Clean completed"
 
 # Test the application

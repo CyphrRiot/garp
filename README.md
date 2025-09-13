@@ -22,6 +22,7 @@ A high‑performance, pure‑Go document search tool with a clean TUI. garp find
 
 ```bash
 garp contract payment agreement
+garp contract payment agreement --distance 200
 garp mutex changed --code
 garp bank wire update --not .txt test
 ```
@@ -32,7 +33,7 @@ garp bank wire update --not .txt test
 
 - 🚀 Pure Go: zero external dependencies – just download and run
 - ⚡ High-Performance: multi-core parallel processing
-- 🎯 Multi-word AND logic (unordered) with a proximity window (default 100 chars)
+- 🎯 Multi-word AND logic (unordered) with a proximity window (default 5000 chars)
 - 🧹 Smart content cleaning: strips HTML/CSS/JS, email headers, control chars
 - 📄 Binary document support: .eml, .mbox, .pdf, .docx/.odt, .rtf, .msg (raw)
 - 📁 Intelligent file filtering; include code files with `--code`
@@ -53,7 +54,7 @@ garp bank wire update --not .txt test
 
 - Pure Go: zero external tools required
 - Multi‑word AND search (unordered)
-- Proximity window (default: 100 characters) across the matched terms
+  Proximity window (default: 5000 characters) across the matched terms
 - Email/document extraction: EML, MBOX, PDF, DOCX/ODT, RTF (MSG raw)
 - Smart cleaning: strips HTML/CSS/JS, email headers, control chars, etc.
 - Beautiful TUI with live progress, paging, and excerpts
@@ -108,13 +109,8 @@ Option 2: Use the prebuilt binary in this repo
 
 ## Behavior and UI
 
-- Matching is unordered within a distance window (default: 100 characters). If all terms appear within that window anywhere in the file, the file matches.
-- During search, the TUI shows:
-    - A header with the ASCII logo, search terms, and environment info
-    - A live progress line: `⏳ Processing (N/M): /path/to/current/file`
-    - A scrolling results box (file details and excerpts)
-    - A non‑scrolling status area above the footer (e.g., “📋 Found N files with matches” and prompts)
-    - Footer with navigation hints
+Matching is unordered within a distance window (default: 5000 characters). If all terms appear within that window anywhere in the file, the file matches.
+During search, the TUI shows: - A header with ASCII "GARP" logo + version, target line listing supported extensions, engine line with live Concurrency: N • Go Heap • Resident • CPU, elapsed time (“Searching” while loading; “Search” after completion), and search terms line - A live progress line: `⏳ Discovery [count/total]: path` or `⏳ Processing [count/total]: path` - A scrolling results box (file details and excerpts) - A non‑scrolling status area above the footer (e.g., “📋 Found N files with matches” and prompts) - Footer with navigation hints
 
 - Navigation keys:
     - Next file: `n`, `y`, `space`, or `enter`
@@ -134,7 +130,7 @@ Document files (default)
 - Web: `.html`, `.xml`
 - Data/Config: `.csv`, `.yaml`, `.yml`, `.cfg`, `.conf`, `.ini`, `.sh`, `.bat`
 - Email: `.eml` (MIME parsing), `.mbox` (collections of messages), `.msg` (raw content)
-- Office: `.pdf` (text extraction), `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`
+- Office: `.pdf` (text extraction, currently disabled for stability), `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`
 - OpenOffice: `.odt`, `.ods`, `.odp`
 
 Code files (with `--code`)
@@ -168,12 +164,15 @@ Binary extraction (pure Go)
 Command
 
 ```
-garp [--code] <word1> <word2> ... [--not <exclude1> <exclude2> ...]
+garp [--code] [--distance N] [--heavy-concurrency N] [--file-timeout-binary N] <word1> <word2> ... [--not <exclude1> <exclude2> ...]
 ```
 
 Flags
 
 - `--code`: include programming/code files in the search
+- `--distance N`: set the proximity window in characters (default 5000)
+- `--heavy-concurrency N`: number of concurrent heavy extractions (default 2)
+- `--file-timeout-binary N`: timeout in ms for binary file extraction (default 1000)
 - `--not`: everything after this is treated as exclusions
     - Exclusions that start with a dot exclude extensions (e.g., `.txt`, `.pdf`)
     - Other exclusions are treated as words to exclude
@@ -182,7 +181,7 @@ Flags
 
 Notes
 
-- The proximity window is currently fixed at 100 characters.
+- The proximity window defaults to 5000 characters but can be overridden with --distance N.
 - Exclusions apply across the search (not per‑file).
 
 ## Building
@@ -196,7 +195,7 @@ We keep the latest binary in `bin/garp` in this repo for convenience so users ca
 
 ## Versioning
 
-- The current version is tracked in the `VERSION` file (currently `0.1`).
+- The current version is tracked in the VERSION file (currently `0.3`).
 - The `garp` binary reports this version via `--version`.
 - Releases should be tagged with the same version, and the README badge updated to match.
 
@@ -204,7 +203,10 @@ We keep the latest binary in `bin/garp` in this repo for convenience so users ca
 
 ```
 garp/
-├── main.go            # TUI, argument parsing, progress streaming, results
+├── main.go            # Entry point, calls app.Run()
+├── app/
+│   ├── cli.go         # Argument parsing, flags, and configuration
+│   └── tui.go         # Terminal UI, progress streaming, and results display
 ├── search/
 │   ├── engine.go      # Search orchestration (silent mode for TUI)
 │   ├── filter.go      # File walking, matching logic, size-limited reads
@@ -213,9 +215,8 @@ garp/
 ├── config/
 │   └── types.go       # Supported types, globs/filters, descriptions
 ├── bin/               # Built binary (kept in-repo for convenience)
-├── images/
-│   └── garp.png       # Screenshot used in README
-├── Makefile
+├── garp.png           # Screenshot used in README
+├── Makefile           # `make install` is your friend
 └── README.md
 ```
 
@@ -224,7 +225,7 @@ garp/
 - How does multi‑word matching work?
     - Unordered AND within a proximity window (default: 100 characters between the earliest and latest matched terms).
 - Can I change the distance?
-    - Not yet. If you need this, please open an issue—adding a flag is straightforward.
+    - Yes, use --distance N to set the proximity window in characters (default 5000).
 - Is it cross‑platform?
     - Yes, the implementation is pure Go and should work on Linux, macOS, and Windows terminals that support ANSI/TUI. You’ll need a compatible terminal for best results.
 

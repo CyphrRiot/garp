@@ -92,7 +92,7 @@ type model struct {
 
 	// UI state
 	confirmSelected string // "yes" or "no"
-	memUsageText    string // " • RAM: XXX MB • CPU: YY%"
+	memUsageText    string // e.g., " • RAM: XXX MB • CPU: YY%"
 
 	// Background progress (optional)
 	progressText string // e.g., "⏳ Processing..."
@@ -121,9 +121,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// After loading, handle navigation and quit
+		// Selection navigation for highlighted buttons
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "left", "h":
+			m.confirmSelected = "yes"
+			return m, nil
+		case "right", "l":
+			m.confirmSelected = "no"
+			return m, nil
+
+		case "enter":
+			if m.confirmSelected == "no" {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			// default/"yes": advance or quit if at end
+			if m.currentPage < m.totalPages-1 {
+				m.currentPage++
+				return m, nil
+			}
+			m.quitting = true
+			return m, tea.Quit
+
+		// Legacy keys
+		case "y", "space":
+			if m.currentPage < m.totalPages-1 {
+				m.currentPage++
+				return m, nil
+			}
+			m.quitting = true
+			return m, tea.Quit
+		case "n":
 			m.quitting = true
 			return m, tea.Quit
 		case "p":
@@ -131,29 +159,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentPage--
 			}
 			return m, nil
-		case "n", "enter", " ":
-			if m.currentPage < m.totalPages-1 {
-				m.currentPage++
-			}
-			return m, nil
-		case "home":
-			m.currentPage = 0
-			return m, nil
-		case "end":
-			m.currentPage = m.totalPages - 1
-			return m, nil
+		case "q", "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
 		}
 		return m, nil
 
 	case searchResultMsg:
 		// Search completed: store results, compute pages, stop loading
 		m.results = msg.results
+		m.confirmSelected = "yes"
 		m.searchTime = msg.searchTime
 		m.totalPages = len(m.results)
 		if m.totalPages == 0 {
 			m.totalPages = 1
 		}
 		m.loading = false
+		return m, nil
 		return m, m.memUsageTick()
 
 	case memUsageMsg:
@@ -209,8 +231,7 @@ func (m model) View() string {
 	if len(logoTop) < len(logoBottom) {
 		logoTop += strings.Repeat(" ", len(logoBottom)-len(logoTop))
 	}
-	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Align(lipgloss.Center).Render(logoTop + "\n" + logoBottom)
-	headerLines = append(headerLines, "")
+	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Align(lipgloss.Left).Render(logoTop + "\n" + logoBottom)
 	headerLines = append(headerLines, "")
 	headerLines = append(headerLines, logo)
 	headerLines = append(headerLines, "")
@@ -222,6 +243,11 @@ func (m model) View() string {
 			terms = append(terms, fmt.Sprintf("\"%s\"", w))
 		}
 		headerLines = append(headerLines, subHeaderStyle.Render("🔍 Searching for: "+strings.Join(terms, " ")))
+	}
+
+	// Total matches at the top
+	if !m.loading {
+		headerLines = append(headerLines, successStyle.Render(fmt.Sprintf("📋 Matched: %d files", len(m.results))))
 	}
 
 	// Target description
@@ -248,22 +274,32 @@ func (m model) View() string {
 	// moved search terms line above, right after logo
 
 	// Header height (count rendered lines accurately)
-	searchInfo := lipgloss.JoinVertical(lipgloss.Left, headerLines...)
+	searchInfo := strings.Join(headerLines, "\n")
 	headerHeight := strings.Count(searchInfo, "\n") + 1
-	// Account for top progress line while loading
-	topStatusHeight := 1
+	// Account explicitly for header, progress, bottom status, and footer heights
+	progressHeight := 1
 	if !m.loading {
-		topStatusHeight = 0
+		progressHeight = 0
 	}
+
+	bottomStatusHeight := 0
+	if !m.loading && len(m.results) > 0 {
+		// "Continue? [ Yes ] [ No ]" consumes about two lines (spacer + buttons)
+		bottomStatusHeight = 2
+	}
+
+	footerHeight := 3 // blank line + footer + blank line
 
 	// Top progress line while loading (above the box)
 	var parts []string
+	parts = append(parts, searchInfo)
 	if m.loading {
 		var txt string
 		if m.progressText != "" {
+			// Expect m.progressText formatted as "[num/total]: filename"
 			txt = fmt.Sprintf("⏳ %s", m.progressText)
 		} else {
-			txt = "⏳ Searching..."
+			txt = "⏳ Processing"
 		}
 		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
 		parts = append(parts, progressStyled.Render(txt))
@@ -301,16 +337,60 @@ func (m model) View() string {
 	}
 
 	boxOuterWidth := width - 4
-	boxHeight := height - headerHeight - topStatusHeight - 2 // Account for header, progress, and footer
+	chromeHeight := 4
+	contentHeight := height - headerHeight - progressHeight - bottomStatusHeight - footerHeight - chromeHeight
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
 
-	parts = append(parts, appStyle.Width(boxOuterWidth).Height(boxHeight).Render(boxContent))
+	parts = append(parts, appStyle.Width(boxOuterWidth).Height(contentHeight).Render(boxContent))
 
-	// Footer
-	footer := "PRESS 🔚 next item • q: to quit • p: previous item"
-	footerStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Align(lipgloss.Center)
-	parts = append(parts, footerStyled.Width(width).Render(footer))
+	// Non-scrolling bottom status (found count + buttons)
+	var bottomStatus string
+	if !m.loading && len(m.results) > 0 {
+		// Inline highlighted buttons (no border boxes)
+		yesSel := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#1a1b26")).
+			Background(lipgloss.Color("#9ece6a")).
+			Padding(0, 1)
+		yesUn := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#9ece6a")).
+			Padding(0, 1)
+		noSel := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#c0caf5")).
+			Background(lipgloss.Color("#414868")).
+			Padding(0, 1)
+		noUn := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#565f89")).
+			Padding(0, 1)
 
-	return "\n" + searchInfo + "\n" + strings.Join(parts, "\n")
+		var yesBtn, noBtn string
+		if m.confirmSelected == "no" {
+			yesBtn = yesUn.Render("[ Yes ]")
+			noBtn = noSel.Render("[ No ]")
+		} else {
+			yesBtn = yesSel.Render("[ Yes ]")
+			noBtn = noUn.Render("[ No ]")
+		}
+
+		cont := infoStyle.Render("Continue? ") + yesBtn + "    " + noBtn
+		bottomStatus = lipgloss.JoinVertical(lipgloss.Left, "", cont)
+	}
+
+	if bottomStatus != "" {
+		parts = append(parts, bottomStatus)
+	}
+
+	// Footer line
+	quitInstruction := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Align(lipgloss.Center).
+		Render("🔚 PRESS 'q' TO QUIT  •  p: previous  •  n: next")
+	parts = append(parts, "", quitInstruction, "")
+
+	return strings.Join(parts, "\n")
 }
 
 // Background search command (now exposed on model)
@@ -425,7 +505,7 @@ func (m model) memUsageTick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
 		// Sample memory and CPU
 		mem, cpu := sampleMemoryAndCPU()
-		return memUsageMsg{Text: fmt.Sprintf(" • Temp Memory %3.1f MB • Resident %3.1f MB • CPU %2.1f%%", float64(mem.heap)/(1024*1024), float64(mem.rss)/(1024*1024), cpu)}
+		return memUsageMsg{Text: fmt.Sprintf(" • Temp Memory %5.1f MB • Resident %5.1f MB • CPU %5.1f%%", float64(mem.heap)/(1024*1024), float64(mem.rss)/(1024*1024), cpu)}
 	})
 }
 
