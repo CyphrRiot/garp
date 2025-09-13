@@ -275,11 +275,6 @@ func (m model) View() string {
 		headerLines = append(headerLines, subHeaderStyle.Render("🔍 Searching: "+strings.Join(terms, " ")))
 	}
 
-	// Total matches at the top
-	if !m.loading {
-		headerLines = append(headerLines, successStyle.Render(fmt.Sprintf("📋 Matched: %d files", len(m.results))))
-	}
-
 	// Target description
 	targetDesc := config.GetFileTypeDescription(m.includeCode)
 	targetPrefix := "📁 Target: "
@@ -438,7 +433,7 @@ func (m model) View() string {
 
 	// Footer line
 	quitInstruction := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240")).
+		Foreground(lipgloss.Color("#7aa2f7")).
 		Align(lipgloss.Center).
 		Render("🔚 'ENTER' continue • 'q' quit • p: previous • n: next")
 	parts = append(parts, quitInstruction)

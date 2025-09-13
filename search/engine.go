@@ -196,8 +196,19 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 			if IsBinaryFormat(filePath) {
 				ext := filepath.Ext(filePath)
 				// Bounded streaming prefilter for supported binary types (EML/MSG/MBOX/RTF).
-				// Skip only when conclusively absent; proceed when undecided.
-				if ok, decided := BinaryStreamingPrefilterDecided(filePath, se.SearchWords, 1*1024*1024); decided && !ok {
+				// Use a smaller cap for email formats to reduce latency, and skip heavy extraction unless prefilter passes.
+				cap := int64(1024 * 1024)
+				if strings.EqualFold(ext, ".eml") || strings.EqualFold(ext, ".msg") {
+					cap = int64(256 * 1024)
+				}
+				if ok, decided := BinaryStreamingPrefilterDecided(filePath, se.SearchWords, cap); decided && !ok {
+					continue
+				}
+				// Skip expensive extraction unless the prefilter conclusively passes
+				if ok := func() bool {
+					found, decided := BinaryStreamingPrefilterDecided(filePath, se.SearchWords, cap)
+					return decided && found
+				}(); !ok {
 					continue
 				}
 				// For binary files, extract text first
