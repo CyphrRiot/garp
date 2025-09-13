@@ -282,18 +282,11 @@ func (m model) View() string {
 	searchInfo := strings.Join(headerLines, "\n")
 	headerHeight := strings.Count(searchInfo, "\n") + 1
 	// Account explicitly for header, progress, bottom status, and footer heights
-	progressHeight := 1
-	if !m.loading {
-		progressHeight = 0
-	}
+	progressHeight := 1 // always reserve progress line space to keep box position stable
 
-	bottomStatusHeight := 0
-	if !m.loading && len(m.results) > 0 {
-		// "Continue? [ Yes ] [ No ]" consumes about two lines (spacer + buttons)
-		bottomStatusHeight = 2
-	}
+	bottomStatusHeight := 1 // reserve a single line for bottom status to reduce blank space
 
-	footerHeight := 3 // blank line + footer + blank line
+	footerHeight := 1 // footer only
 
 	// Top progress line while loading (above the box)
 	var parts []string
@@ -308,6 +301,9 @@ func (m model) View() string {
 		}
 		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
 		parts = append(parts, progressStyled.Render(txt))
+	} else {
+		// Reserve the progress row to keep the box fixed when not loading
+		parts = append(parts, "")
 	}
 
 	// Main content box
@@ -387,11 +383,14 @@ func (m model) View() string {
 		}
 
 		cont := infoStyle.Render("Continue? ") + yesBtn + "    " + noBtn
-		bottomStatus = lipgloss.JoinVertical(lipgloss.Left, "", cont)
+		bottomStatus = cont
 	}
 
 	if bottomStatus != "" {
 		parts = append(parts, bottomStatus)
+	} else {
+		// Reserve the bottom status row to keep the box fixed when no status is shown
+		parts = append(parts, "")
 	}
 
 	// Footer line
@@ -399,7 +398,7 @@ func (m model) View() string {
 		Foreground(lipgloss.Color("240")).
 		Align(lipgloss.Center).
 		Render("🔚 'ENTER' to continue • 'q' TO QUIT • p: previous • n: next")
-	parts = append(parts, "", quitInstruction, "")
+	parts = append(parts, quitInstruction)
 
 	return strings.Join(parts, "\n")
 }
@@ -516,7 +515,7 @@ func (m model) memUsageTick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
 		// Sample memory and CPU
 		mem, cpu := sampleMemoryAndCPU()
-		return memUsageMsg{Text: fmt.Sprintf(" • Temp Memory %5.1f MB • Resident %5.1f MB • CPU %5.1f%%", float64(mem.heap)/(1024*1024), float64(mem.rss)/(1024*1024), cpu)}
+		return memUsageMsg{Text: fmt.Sprintf(" • Temporaru %5.1f MB • Total %5.1f MB • CPU %5.1f%%", float64(mem.heap)/(1024*1024), float64(mem.rss)/(1024*1024), cpu)}
 	})
 }
 
