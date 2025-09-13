@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,7 +20,43 @@ type SearchResult struct {
 }
 
 // ProgressFunc is an optional callback to report progress like: processed, total, path
-type ProgressFunc func(processed, total int, path string)
+type ProgressFunc func(stage string, processed, total int, path string)
+
+// ConcurrencyManager handles bounded concurrency for heavy operations
+type ConcurrencyManager struct {
+	sem chan struct{}
+}
+
+func NewConcurrencyManager(slots int) *ConcurrencyManager {
+	return &ConcurrencyManager{sem: make(chan struct{}, slots)}
+}
+
+func (cm *ConcurrencyManager) Acquire() {
+	cm.sem <- struct{}{}
+}
+
+func (cm *ConcurrencyManager) Release() {
+	<-cm.sem
+}
+
+func (cm *ConcurrencyManager) ExecuteWithTimeout(fn func(), timeout time.Duration) error {
+	done := make(chan struct{})
+
+	go func() {
+		defer func() { _ = recover() }()
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("operation timed out")
+	}
+}
+
+// heavySem is a single-slot semaphore to bound concurrent binary extractions
+var heavySem = make(chan struct{}, 1)
 
 // SearchEngine handles the multi-word search logic
 type SearchEngine struct {
@@ -48,57 +85,37 @@ func NewSearchEngine(searchWords, excludeWords []string, fileTypes []string, inc
 	}
 }
 
-// Execute performs the complete search operation
-func (se *SearchEngine) Execute() ([]SearchResult, error) {
-	startTime := time.Now()
-
-	// Step 1: Get file count estimate
-	fileCount, err := GetDocumentFileCount(se.FileTypes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file count: %w", err)
-	}
-	// Emit initial progress with 0 processed
-	if se.OnProgress != nil {
-		se.OnProgress(0, fileCount, "")
-	}
-
-	if !se.Silent {
-		fmt.Printf("Document files to search: %s\n", formatNumber(fileCount))
-	}
-
-	// Step 2: Find files containing the first word
+// DiscoverCandidates finds files containing the first search word
+func (se *SearchEngine) DiscoverCandidates(fileCount int) ([]string, int, error) {
 	if !se.Silent {
 		fmt.Printf("Finding files with '%s'...\n", se.SearchWords[0])
 	}
 	candidateFiles, err := FindFilesWithFirstWordProgress(se.SearchWords[0], se.FileTypes, func(processed, total int, path string) {
 		if se.OnProgress != nil {
-			se.OnProgress(processed, total, path)
+			se.OnProgress("discovery", processed, total, path)
 		}
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to find files with first word: %w", err)
+		return nil, 0, fmt.Errorf("failed to find files with first word: %w", err)
 	}
-	// If we have fewer candidates than the initial file count, update the total baseline
 	total := fileCount
 	if len(candidateFiles) > 0 && len(candidateFiles) < fileCount {
 		total = len(candidateFiles)
 	}
-
 	if len(candidateFiles) == 0 {
-		if se.OnProgress != nil {
-			se.OnProgress(0, fileCount, "")
-		}
 		if !se.Silent {
 			fmt.Printf("No files found containing '%s'\n", se.SearchWords[0])
 		}
-		return nil, nil
+		return nil, total, nil
 	}
-
 	if !se.Silent {
 		fmt.Printf("Found %s files containing '%s'\n", formatNumber(len(candidateFiles)), se.SearchWords[0])
 	}
+	return candidateFiles, total, nil
+}
 
-	// Step 3: Filter files that contain ALL words and don't contain exclude words
+// FilterCandidates filters candidates for all words and excludes
+func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, startTime time.Time) ([]string, error) {
 	if !se.Silent {
 		fmt.Println("Filtering for files containing ALL words...")
 	}
@@ -126,12 +143,13 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 
 	var matchingFiles []string
 	processed := 0
+	cm := NewConcurrencyManager(1) // Single slot for heavy ops
 
 	for _, filePath := range candidateFiles {
 		processed++
 		// Emit per-file progress (filtered phase)
 		if se.OnProgress != nil {
-			se.OnProgress(processed, total, filePath)
+			se.OnProgress("processing", processed, total, filePath)
 		}
 
 		// Show progress every 500 files
@@ -155,22 +173,38 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 			continue
 		}
 
-		// Removed .msg prefilter skip to avoid false negatives
-
 		// Fast prefilter for text files: require presence of the second word before heavy checks
 		if len(se.SearchWords) > 1 && !IsBinaryFormat(filePath) {
 			if !StreamContainsWord(filePath, se.SearchWords[1]) {
 				continue
 			}
+			// Rarest-terms (heuristic) prefilter for 3+ terms: pick two longest terms as proxies for rarity
+			if len(se.SearchWords) >= 3 {
+				terms := make([]string, len(se.SearchWords))
+				copy(terms, se.SearchWords)
+				sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
+				rare := terms[:2]
+				if !StreamContainsAllWords(filePath, rare) {
+					continue
+				}
+			}
 		}
+
 		// Check if file contains all search words
 		hasAllWords := true
 		if len(se.SearchWords) > 1 {
 			if IsBinaryFormat(filePath) {
 				ext := filepath.Ext(filePath)
-				// Prefilter EML/MSG: plural-aware all-words presence via streaming (bounded). Skip if conclusively absent.
+				// Prefilter EML/MSG: plural-aware rarest-terms (or all terms) via streaming (bounded). Skip if conclusively absent.
 				if strings.EqualFold(ext, ".eml") || strings.EqualFold(ext, ".msg") {
-					if ok, decided := StreamContainsAllWordsDecided(filePath, se.SearchWords); decided && !ok {
+					termsToCheck := se.SearchWords
+					if len(se.SearchWords) >= 3 {
+						terms := make([]string, len(se.SearchWords))
+						copy(terms, se.SearchWords)
+						sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
+						termsToCheck = terms[:2]
+					}
+					if ok, decided := StreamContainsAllWordsDecidedWithCap(filePath, termsToCheck, 1*1024*1024); decided && !ok {
 						continue
 					}
 				}
@@ -180,12 +214,19 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 					fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
 					continue
 				}
-				// ext already determined above
 				if extractor, exists := se.Registry.GetExtractor(ext); exists {
-					extractedText, err := extractor.ExtractText([]byte(content))
-					if err != nil {
+					var extractedText string
+					var extErr error
+					err := cm.ExecuteWithTimeout(func() {
+						extractedText, extErr = extractor.ExtractText([]byte(content))
+					}, 1500*time.Millisecond)
+					if err != nil || extErr != nil {
 						if !se.Silent {
-							fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, err)
+							if extErr != nil {
+								fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, extErr)
+							} else {
+								fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
+							}
 						}
 						continue
 					}
@@ -197,19 +238,19 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 					continue
 				}
 			} else {
-				hasAllWords, err = CheckFileContainsAllWords(filePath, se.SearchWords, se.Distance, se.Silent)
+				ok, err := CheckFileContainsAllWords(filePath, se.SearchWords, se.Distance, se.Silent)
 				if err != nil {
 					if !se.Silent {
 						fmt.Printf("Warning: Error checking file %s: %v\n", filePath, err)
 					}
 					continue
 				}
+				hasAllWords = ok
 			}
 		} else {
 			// Single-word presence check
 			word := se.SearchWords[0]
 			if IsBinaryFormat(filePath) {
-				// For binaries (including .eml/.msg), extract and run whole-word check on cleaned text
 				rawContent, _, err := GetFileContent(filePath)
 				if err != nil {
 					if !se.Silent {
@@ -219,10 +260,18 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 				}
 				ext := filepath.Ext(filePath)
 				if extractor, exists := se.Registry.GetExtractor(ext); exists {
-					extractedText, err := extractor.ExtractText([]byte(rawContent))
-					if err != nil {
+					var extractedText string
+					var extErr error
+					err := cm.ExecuteWithTimeout(func() {
+						extractedText, extErr = extractor.ExtractText([]byte(rawContent))
+					}, 1500*time.Millisecond)
+					if err != nil || extErr != nil {
 						if !se.Silent {
-							fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, err)
+							if extErr != nil {
+								fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, extErr)
+							} else {
+								fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
+							}
 						}
 						continue
 					}
@@ -234,14 +283,14 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 					continue
 				}
 			} else {
-				// Text files: quick presence check
-				hasAllWords, err = CheckFileContainsAllWords(filePath, []string{word}, se.Distance, se.Silent)
+				ok, err := CheckFileContainsAllWords(filePath, []string{word}, se.Distance, se.Silent)
 				if err != nil {
 					if !se.Silent {
 						fmt.Printf("Warning: Error checking file %s: %v\n", filePath, err)
 					}
 					continue
 				}
+				hasAllWords = ok
 			}
 		}
 
@@ -252,8 +301,8 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 		// Check if file contains any exclude words
 		hasExcludeWords := false
 		if IsBinaryFormat(filePath) {
-			// For binary files, use extracted text
-			content, _, err := GetFileContent(filePath)
+			// For binary files, extract text
+			rawContent, _, err := GetFileContent(filePath)
 			if err != nil {
 				if !se.Silent {
 					fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
@@ -262,14 +311,23 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 			}
 			ext := filepath.Ext(filePath)
 			if extractor, exists := se.Registry.GetExtractor(ext); exists {
-				extractedText, err := extractor.ExtractText([]byte(content))
-				if err != nil {
+				var out string
+				var extErr error
+				err := cm.ExecuteWithTimeout(func() {
+					out, extErr = extractor.ExtractText([]byte(rawContent))
+				}, 1500*time.Millisecond)
+				if err != nil || extErr != nil {
 					if !se.Silent {
-						fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, err)
+						if extErr != nil {
+							fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, extErr)
+						} else {
+							fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
+						}
 					}
 					continue
 				}
-				hasExcludeWords = CheckTextContainsExcludeWords(CleanContent(extractedText), wordExcludes)
+				// Compute exclude words from extracted text (cleaned)
+				hasExcludeWords = CheckTextContainsExcludeWords(CleanContent(out), wordExcludes)
 			} else {
 				if !se.Silent {
 					fmt.Printf("Warning: No extractor for %s\n", ext)
@@ -277,13 +335,14 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 				continue
 			}
 		} else {
-			hasExcludeWords, err = CheckFileContainsExcludeWords(filePath, wordExcludes)
+			ok2, err := CheckFileContainsExcludeWords(filePath, wordExcludes)
 			if err != nil {
 				if !se.Silent {
 					fmt.Printf("Warning: Error checking exclude words in %s: %v\n", filePath, err)
 				}
 				continue
 			}
+			hasExcludeWords = ok2
 		}
 
 		if hasExcludeWords {
@@ -292,20 +351,13 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 
 		matchingFiles = append(matchingFiles, filePath)
 	}
+	return matchingFiles, nil
+}
 
-	if len(matchingFiles) == 0 {
-		if !se.Silent {
-			fmt.Println("No files found containing all search terms.")
-		}
-		return nil, nil
-	}
-
-	// Step 4: Extract content and create results
-	if !se.Silent {
-		fmt.Printf("Found %s files containing all words. Extracting content...\n", formatNumber(len(matchingFiles)))
-	}
-
+// ExtractAndBuildResults extracts content and builds search results
+func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]SearchResult, error) {
 	results := make([]SearchResult, 0, len(matchingFiles))
+	cm := NewConcurrencyManager(1)
 
 	for _, filePath := range matchingFiles {
 		var content string
@@ -336,7 +388,9 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 			}
 
 			if extractor, exists := se.Registry.GetExtractor(ext); exists {
-				content, err = extractor.ExtractText([]byte(rawContent))
+				err = cm.ExecuteWithTimeout(func() {
+					content, err = extractor.ExtractText([]byte(rawContent))
+				}, 1500*time.Millisecond)
 				if err != nil {
 					if !se.Silent {
 						fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, err)
@@ -379,6 +433,60 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 		}
 
 		results = append(results, result)
+	}
+	return results, nil
+}
+
+// Execute performs the complete search operation
+func (se *SearchEngine) Execute() ([]SearchResult, error) {
+	startTime := time.Now()
+
+	// Step 1: Get file count estimate
+	fileCount, err := GetDocumentFileCount(se.FileTypes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file count: %w", err)
+	}
+	// Emit initial progress with 0 processed
+	if se.OnProgress != nil {
+		se.OnProgress("discovery", 0, fileCount, "")
+	}
+
+	if !se.Silent {
+		fmt.Printf("Document files to search: %s\n", formatNumber(fileCount))
+	}
+
+	// Step 2: Discover candidates
+	candidateFiles, total, err := se.DiscoverCandidates(fileCount)
+	if err != nil {
+		return nil, err
+	}
+	if candidateFiles == nil {
+		if se.OnProgress != nil {
+			se.OnProgress("discovery", 0, fileCount, "")
+		}
+		return nil, nil
+	}
+
+	// Step 3: Filter candidates
+	matchingFiles, err := se.FilterCandidates(candidateFiles, total, startTime)
+	if err != nil {
+		return nil, err
+	}
+	if len(matchingFiles) == 0 {
+		if !se.Silent {
+			fmt.Println("No files found containing all search terms.")
+		}
+		return nil, nil
+	}
+
+	// Step 4: Extract and build results
+	if !se.Silent {
+		fmt.Printf("Found %s files containing all words. Extracting content...\n", formatNumber(len(matchingFiles)))
+	}
+
+	results, err := se.ExtractAndBuildResults(matchingFiles)
+	if err != nil {
+		return nil, err
 	}
 
 	totalTime := time.Since(startTime)

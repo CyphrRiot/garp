@@ -101,8 +101,11 @@ type memUsageMsg struct {
 }
 
 // progressMsg updates the top progress line while loading.
-// Format in View: "⏳ Processing [num/total]: filename"
+// Format in View: "⏳ {Stage} [num/total]: filename"
+// progressMsg updates the top progress line while loading.
+// Format in View: "⏳ {Stage} [num/total]: filename"
 type progressMsg struct {
+	Stage string
 	Count int
 	Total int
 	Path  string
@@ -133,9 +136,9 @@ func (m model) runSearch() tea.Cmd {
 		se.Distance = m.distance
 	}
 	// Stream progress from the engine to the TUI header
-	se.OnProgress = func(processed, total int, path string) {
+	se.OnProgress = func(stage string, processed, total int, path string) {
 		select {
-		case progressChan <- progressMsg{Count: processed, Total: total, Path: path}:
+		case progressChan <- progressMsg{Stage: stage, Count: processed, Total: total, Path: path}:
 		default:
 		}
 	}
@@ -174,7 +177,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case progressMsg:
 		// Update the top progress line (only shown while loading)
-		m.progressText = fmt.Sprintf("[%d/%d]: %s", msg.Count, msg.Total, msg.Path)
+		m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(msg.Stage), msg.Count, msg.Total, msg.Path)
 		// Keep polling progress while loading
 		return m, pollProgress()
 
@@ -459,10 +462,10 @@ func (m model) View() string {
 
 	// Top progress line while loading (above the box) — use a vivid green to distinguish progress
 	if m.loading {
-		txt := "⏳ Processing"
+		txt := "⏳ Searching..."
 		if m.progressText != "" {
-			// Expect m.progressText formatted as "[num/total]: filename"
-			txt = fmt.Sprintf("⏳ Processing %s", m.progressText)
+			// Expect m.progressText formatted as "{Stage} [num/total]: filename"
+			txt = fmt.Sprintf("⏳ %s", m.progressText)
 		}
 		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff")) // Tokyo Night cyan
 		parts = append(parts, progressStyled.Render(txt))
@@ -687,7 +690,7 @@ func (m model) memUsageTick() tea.Cmd {
 				}
 			}
 		}
-		memText := fmt.Sprintf(" • Go Heap: %.0f MB • RSS: %.0f MB", heapMB, rssMB)
+		memText := fmt.Sprintf(" • Go Heap: %3.0f MB • Resident: %3.0f MB", heapMB, rssMB)
 
 		// CPU (user+sys vs wall)
 		now := time.Now()

@@ -561,6 +561,106 @@ func StreamContainsAllWords(filePath string, words []string) bool {
 	return found
 }
 
+// StreamContainsAllWordsDecidedWithCap streams a file and returns whether all words are present.
+// - found = true, decided = true: conclusively found all words
+// - found = false, decided = true: conclusively not all words present
+// - found = false, decided = false: budget reached; prefilter is undecided (do not skip)
+func StreamContainsAllWordsDecidedWithCap(filePath string, words []string, capBytes int64) (bool, bool) {
+	if len(words) == 0 {
+		return true, true
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false, true
+	}
+	defer f.Close()
+
+	// Build plural-aware whole-word regexes (?i)\b(?:word(?:es|s)?)\b
+	res := make([]*regexp.Regexp, 0, len(words))
+	for _, w := range words {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
+		res = append(res, regexp.MustCompile(pat))
+	}
+	if len(res) == 0 {
+		return true, true
+	}
+
+	const chunkSize = 64 * 1024
+	const overlap = 128
+
+	// Align with GetFileContent limits, then apply optional capBytes
+	stat, statErr := f.Stat()
+	var maxBytes int64
+	if statErr == nil {
+		switch {
+		case stat.Size() > 50*1024*1024:
+			maxBytes = 10 * 1024 * 1024
+		case stat.Size() > 10*1024*1024:
+			maxBytes = 5 * 1024 * 1024
+		default:
+			maxBytes = stat.Size()
+		}
+	} else {
+		maxBytes = 10 * 1024 * 1024
+	}
+	if capBytes > 0 && capBytes < maxBytes {
+		maxBytes = capBytes
+	}
+
+	foundFlags := make([]bool, len(res))
+	remaining := len(res)
+
+	var total int64
+	prev := make([]byte, 0, overlap)
+	buf := make([]byte, chunkSize)
+	for {
+		if total >= maxBytes {
+			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+			return false, false // budget reached; undecided
+		}
+		toRead := chunkSize
+		if rem := maxBytes - total; rem < int64(toRead) {
+			toRead = int(rem)
+		}
+		n, rErr := f.Read(buf[:toRead])
+		if n > 0 {
+			combined := append(prev, buf[:n]...)
+			for i, re := range res {
+				if !foundFlags[i] && re.Match(combined) {
+					foundFlags[i] = true
+					remaining--
+					if remaining == 0 {
+						_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+						return true, true
+					}
+				}
+			}
+			if n >= overlap {
+				prev = append(prev[:0], buf[n-overlap:n]...)
+			} else {
+				if len(combined) >= overlap {
+					prev = append(prev[:0], combined[len(combined)-overlap:]...)
+				} else {
+					prev = append(prev[:0], combined...)
+				}
+			}
+			total += int64(n)
+		}
+		if rErr == io.EOF {
+			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+			return false, true // EOF: conclusively not all present
+		}
+		if rErr != nil {
+			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+			return false, true // I/O error: treat as decided false
+		}
+	}
+}
+
 // CheckFileContainsAllWords checks if a file contains all search words
 func CheckFileContainsAllWords(filePath string, words []string, distance int, silent bool) (bool, error) {
 	// Fast prefilter: require presence of all words before full distance check
