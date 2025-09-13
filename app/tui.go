@@ -68,10 +68,11 @@ var (
 
 type model struct {
 	// Results and paging
-	results     []search.SearchResult
-	currentPage int
-	pageSize    int
-	totalPages  int
+	results       []search.SearchResult
+	currentPage   int
+	pageSize      int
+	totalPages    int
+	contentScroll int
 
 	// progress totals
 	totalFiles int
@@ -126,6 +127,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Selection navigation for highlighted buttons
 		switch msg.String() {
+		case "q", "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
 		case "left", "h":
 			m.confirmSelected = "yes"
 			return m, nil
@@ -155,16 +159,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "n":
-			m.quitting = true
-			return m, tea.Quit
+			if m.currentPage < m.totalPages-1 {
+				m.currentPage++
+			}
+			m.contentScroll = 0
+			return m, nil
 		case "p":
 			if m.currentPage > 0 {
 				m.currentPage--
 			}
+			m.contentScroll = 0
 			return m, nil
-		case "q", "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
+
+		case "home":
+			m.currentPage = 0
+			m.contentScroll = 0
+			return m, nil
+		case "end":
+			m.currentPage = m.totalPages - 1
+			m.contentScroll = 0
+			return m, nil
+		case "up", "k":
+			m.contentScroll--
+			return m, nil
+		case "down", "j":
+			m.contentScroll++
+			return m, nil
+		case "pgup":
+			m.contentScroll -= 5
+			return m, nil
+		case "pgdown":
+			m.contentScroll += 5
+			return m, nil
 		}
 		return m, nil
 
@@ -349,8 +375,25 @@ func (m model) View() string {
 		contentHeight = 1
 	}
 
-	boxContent = clipLines(boxContent, contentHeight)
-	parts = append(parts, appStyle.Width(boxOuterWidth).Height(contentHeight).Render(boxContent))
+	// Window the box content according to contentScroll to enable vertical scrolling
+	lines := strings.Split(boxContent, "\n")
+	if m.contentScroll < 0 {
+		m.contentScroll = 0
+	}
+	maxStart := 0
+	if len(lines) > contentHeight {
+		maxStart = len(lines) - contentHeight
+	}
+	if m.contentScroll > maxStart {
+		m.contentScroll = maxStart
+	}
+	start := m.contentScroll
+	end := start + contentHeight
+	if end > len(lines) {
+		end = len(lines)
+	}
+	window := strings.Join(lines[start:end], "\n")
+	parts = append(parts, appStyle.Width(boxOuterWidth).Height(contentHeight).Render(window))
 
 	// Non-scrolling bottom status (found count + buttons)
 	var bottomStatus string
@@ -397,7 +440,7 @@ func (m model) View() string {
 	quitInstruction := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("240")).
 		Align(lipgloss.Center).
-		Render("🔚 'ENTER' to continue • 'q' TO QUIT • p: previous • n: next")
+		Render("🔚 'ENTER' continue • 'q' quit • p: previous • n: next")
 	parts = append(parts, quitInstruction)
 
 	return strings.Join(parts, "\n")

@@ -3,6 +3,7 @@ package search
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -225,6 +226,134 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 
 	if len(excerpts) > 0 {
 		return excerpts
+	}
+
+	// Sliding-window strategy: find the smallest span that covers at least one occurrence
+	// of every search term and build an excerpt from that span.
+	if len(termRE) > 1 {
+		type tmatch struct {
+			pos int
+			idx int
+		}
+		all := make([]tmatch, 0, 128)
+		for i, re := range termRE {
+			idxs := re.FindAllStringIndex(cleaned, -1)
+			for _, loc := range idxs {
+				all = append(all, tmatch{pos: loc[0], idx: i})
+			}
+		}
+		if len(all) > 0 {
+			sort.Slice(all, func(i, j int) bool { return all[i].pos < all[j].pos })
+			counts := make(map[int]int, len(termRE))
+			covered := 0
+			l := 0
+			bestL, bestR := -1, -1
+			for r := 0; r < len(all); r++ {
+				mm := all[r]
+				if counts[mm.idx] == 0 {
+					covered++
+				}
+				counts[mm.idx]++
+				for covered == len(termRE) {
+					curL := all[l].pos
+					curR := all[r].pos
+					if bestL == -1 || (curR-curL) < (bestR-bestL) {
+						bestL, bestR = curL, curR
+					}
+					leftm := all[l]
+					counts[leftm.idx]--
+					if counts[leftm.idx] == 0 {
+						covered--
+					}
+					l++
+				}
+			}
+			if bestL >= 0 && len(excerpts) < maxExcerpts {
+				left := bestL
+				right := bestR
+				limitLeft := left - maxContext/2
+				if limitLeft < 0 {
+					limitLeft = 0
+				}
+				// Expand left to sentence/email-header boundary
+				for left > limitLeft {
+					if cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?' {
+						break
+					}
+					if cleaned[left] == '\n' {
+						ls := left + 1
+						le := ls
+						for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+							le++
+						}
+						if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+							break
+						}
+					}
+					left--
+				}
+				if left > 0 && (cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?') {
+					left++
+				} else if left <= limitLeft {
+					// Paragraph fallback
+					if idx := strings.LastIndex(cleaned[limitLeft:bestL], "\n\n"); idx != -1 {
+						left = limitLeft + idx + 2
+					} else if idx := strings.LastIndex(cleaned[limitLeft:bestL], "\n"); idx != -1 {
+						left = limitLeft + idx + 1
+					} else {
+						left = limitLeft
+					}
+				}
+
+				limitRight := right + maxContext/2
+				if limitRight > len(cleaned) {
+					limitRight = len(cleaned)
+				}
+				// Expand right to sentence/email-header boundary
+				for right < limitRight {
+					if cleaned[right] == '.' || cleaned[right] == '!' || cleaned[right] == '?' {
+						right++
+						break
+					}
+					if cleaned[right] == '\n' {
+						ls := right + 1
+						le := ls
+						for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+							le++
+						}
+						if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+							break
+						}
+					}
+					right++
+				}
+				if right >= limitRight {
+					// Paragraph fallback
+					if idx := strings.Index(cleaned[bestR:limitRight], "\n\n"); idx != -1 {
+						right = bestR + idx
+					} else if idx := strings.Index(cleaned[bestR:limitRight], "\n"); idx != -1 {
+						right = bestR + idx
+					} else {
+						right = limitRight
+					}
+				}
+
+				// Build normalized excerpt and dedupe
+				ex := strings.TrimSpace(cleaned[left:right])
+				if ex != "" {
+					ex = strings.ReplaceAll(ex, "\n", " ")
+					ex = strings.ReplaceAll(ex, "\t", " ")
+					ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
+					if _, ok := seen[ex]; !ok {
+						seen[ex] = struct{}{}
+						excerpts = append(excerpts, ex)
+						if len(excerpts) >= maxExcerpts {
+							return excerpts
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Fallback: find the first occurrence of any term and expand within a small window

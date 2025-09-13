@@ -15,6 +15,7 @@ import (
 	"github.com/emersion/go-mbox"
 	"github.com/jhillyerd/enmime"
 	"github.com/ledongthuc/pdf"
+	"github.com/richardlehane/mscfb"
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
@@ -667,23 +668,68 @@ type MSGExtractor struct{}
 
 // ExtractText implements the Extractor interface for MSG files
 func (e *MSGExtractor) ExtractText(data []byte) (string, error) {
-	// 1) Fast path: if mostly printable ASCII, return as-is
-	printable := 0
-	for _, b := range data {
-		if b == 0x09 || b == 0x0a || b == 0x0d || (b >= 0x20 && b <= 0x7e) {
-			printable++
+	// Attempt to parse the OLE compound file and extract Unicode Subject/Body first.
+	if cf, err := mscfb.New(bytes.NewReader(data)); err == nil {
+		streams := make(map[string][]byte)
+		for ent, err2 := cf.Next(); err2 == nil; ent, err2 = cf.Next() {
+			name := ent.Name
+			// Read the entire stream content
+			b, _ := io.ReadAll(ent)
+			if len(b) > 0 {
+				streams[name] = b
+			}
+		}
+
+		// Helper: prefer Unicode (001F), then ANSI (001E), then binary 0102 (for HTML)
+		findStream := func(keys ...string) ([]byte, bool) {
+			for _, k := range keys {
+				if v, ok := streams[k]; ok && len(v) > 0 {
+					return v, true
+				}
+			}
+			return nil, false
+		}
+		// Helper: decode text from MSG stream, UTF-16 aware with ASCII fallback
+		decodeMSGText := func(b []byte) string {
+			if s, ok := tryDecodeUTF16BestEffort(b); ok {
+				return strings.TrimSpace(s)
+			}
+			s := regexp.MustCompile(`\s+`).ReplaceAllString(string(b), " ")
+			return strings.TrimSpace(s)
+		}
+
+		var subject, body string
+
+		// PR_SUBJECT: 0037 (Unicode 001F; ANSI 001E)
+		if b, ok := findStream("__substg1.0_0037001F", "__substg1.0_0037001E"); ok {
+			subject = decodeMSGText(b)
+		}
+		// PR_BODY: 1000 (Unicode 001F; ANSI 001E)
+		if b, ok := findStream("__substg1.0_1000001F", "__substg1.0_1000001E"); ok {
+			body = decodeMSGText(b)
+		}
+		// PR_HTML: 1013 (Unicode 001F; ANSI 001E; sometimes 0102 binary); use as fallback for body
+		if body == "" {
+			if b, ok := findStream("__substg1.0_1013001F", "__substg1.0_1013001E", "__substg1.0_10130102"); ok {
+				html := decodeMSGText(b)
+				if html == "" {
+					html = string(b)
+				}
+				body = strings.TrimSpace(stripHTMLTags(html))
+			}
+		}
+
+		if subject != "" || body != "" {
+			out := strings.TrimSpace(strings.TrimSpace(subject) + "\n\n" + strings.TrimSpace(body))
+			out = regexp.MustCompile(`\s+`).ReplaceAllString(out, " ")
+			return out, nil
 		}
 	}
-	if len(data) > 0 && float64(printable) >= 0.60*float64(len(data)) {
-		return string(data), nil
-	}
 
-	// 2) Try UTF-16 decode (BOM-aware first, then heuristics for LE/BE)
+	// Fallback: best-effort UTF-16, then ASCII salvage (spaces for non-printables)
 	if s, ok := tryDecodeUTF16BestEffort(data); ok {
 		return strings.TrimSpace(s), nil
 	}
-
-	// 3) Fallback: salvage readable ASCII by replacing non-printables with spaces
 	buf := make([]rune, 0, len(data))
 	for _, b := range data {
 		if b == 0x09 || b == 0x0a || b == 0x0d || (b >= 0x20 && b <= 0x7e) {
