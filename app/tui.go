@@ -73,6 +73,9 @@ type model struct {
 	pageSize    int
 	totalPages  int
 
+	// progress totals
+	totalFiles int
+
 	// Session and timing
 	searchTime time.Duration
 	quitting   bool
@@ -175,7 +178,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.totalPages = 1
 		}
 		m.loading = false
-		return m, nil
 		return m, m.memUsageTick()
 
 	case memUsageMsg:
@@ -186,6 +188,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update the top progress line (only shown while loading)
 		p := msg.Path
 		// keep relative path
+		m.totalFiles = msg.Total
 		m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(msg.Stage), msg.Count, msg.Total, p)
 		// Keep polling progress while loading
 		return m, pollProgress()
@@ -200,6 +203,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if hv {
 			p := lp.Path
 			// keep relative path
+			m.totalFiles = lp.Total
 			m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(lp.Stage), lp.Count, lp.Total, p)
 		}
 		return m, pollProgress()
@@ -242,7 +246,7 @@ func (m model) View() string {
 		for _, w := range m.searchWords {
 			terms = append(terms, fmt.Sprintf("\"%s\"", w))
 		}
-		headerLines = append(headerLines, subHeaderStyle.Render("🔍 Searching for: "+strings.Join(terms, " ")))
+		headerLines = append(headerLines, subHeaderStyle.Render("🔍 Searching: "+strings.Join(terms, " ")))
 	}
 
 	// Total matches at the top
@@ -257,17 +261,18 @@ func (m model) View() string {
 	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc, width-4)))
 
 	// Engine line with cores + RAM/CPU live
-	engine := fmt.Sprintf("⚙️ Engine: Concurrency: %d%s", m.heavyConcurrency, m.memUsageText)
+	engine := fmt.Sprintf("⚙️ Engine: Workers %d%s", m.heavyConcurrency, m.memUsageText)
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7"))
 	headerLines = append(headerLines, engineStyled.Render(engine))
 
-	// Elapsed search time
-	var elapsed string
+	// Elapsed search time (always show combined line; freeze after completion)
+	var minutes float64
 	if m.loading {
-		elapsed = fmt.Sprintf("⏱️ Searching: %.2f minutes", time.Since(startWall).Minutes())
+		minutes = time.Since(startWall).Minutes()
 	} else {
-		elapsed = fmt.Sprintf("⏱️ Search: %.2f minutes", m.searchTime.Minutes())
+		minutes = m.searchTime.Minutes()
 	}
+	elapsed := fmt.Sprintf("⏱️ Searched: %.2f minutes • Matched: %d of %d files", minutes, len(m.results), m.totalFiles)
 	elapsedStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#e0af68"))
 	headerLines = append(headerLines, elapsedStyled.Render(elapsed))
 
@@ -327,9 +332,14 @@ func (m model) View() string {
 			boxContent += "\n"
 		}
 
-		// Add excerpts
+		// Add excerpts (single wrapped line with colored label)
 		for i, excerpt := range result.Excerpts {
-			boxContent += fmt.Sprintf("Excerpt %d:\n%s\n\n", i+1, excerpt)
+			label := subHeaderStyle.Render(fmt.Sprintf("Excerpt %d: ", i+1))
+			innerWidth := (width - 4) - 6
+			if innerWidth < 10 {
+				innerWidth = 10
+			}
+			boxContent += wrapTextWithIndent(label, excerpt, innerWidth) + "\n"
 		}
 
 		// Page indicator
@@ -343,6 +353,7 @@ func (m model) View() string {
 		contentHeight = 1
 	}
 
+	boxContent = clipLines(boxContent, contentHeight)
 	parts = append(parts, appStyle.Width(boxOuterWidth).Height(contentHeight).Render(boxContent))
 
 	// Non-scrolling bottom status (found count + buttons)
@@ -387,7 +398,7 @@ func (m model) View() string {
 	quitInstruction := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("240")).
 		Align(lipgloss.Center).
-		Render("🔚 PRESS 'q' TO QUIT  •  p: previous  •  n: next")
+		Render("🔚 'ENTER' to continue • 'q' TO QUIT • p: previous • n: next")
 	parts = append(parts, "", quitInstruction, "")
 
 	return strings.Join(parts, "\n")
@@ -462,7 +473,7 @@ func renderSearchTerms(searchWords, excludeWords []string, width int) string {
 		}
 		search += " (excluding " + strings.Join(excludes, ", ") + ")"
 	}
-	prefix := "🔍 Searching for:"
+	prefix := "🔍 Searching:"
 	styled := lipgloss.NewStyle().Foreground(lipgloss.Color("#e0af68"))
 	return styled.Render(wrapTextWithIndent(prefix, search, width))
 }

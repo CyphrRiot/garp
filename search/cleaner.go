@@ -31,8 +31,10 @@ var (
 	// Junk lines with excessive = or #
 	junkSymbolsRegex = regexp.MustCompile(`(?m)^[\=\#]{5,}$`)
 
-	// Email quoting lines
-	emailQuotingRegex = regexp.MustCompile(`(?m)^>+.*$`)
+	// Email quoting lines and markers
+	emailQuotingRegex   = regexp.MustCompile(`(?m)^>+.*$`)
+	quoteLineStartRegex = regexp.MustCompile(`(?m)^\s*>+\s*`)
+	quoteMidRegex       = regexp.MustCompile(`\s*>+\s*`)
 )
 
 // CleanContent removes markup, headers, and other noise from content
@@ -55,6 +57,10 @@ func CleanContent(content string) string {
 
 	// Remove email quoting lines
 	content = emailQuotingRegex.ReplaceAllString(content, "")
+	// Strip leading '>' quote markers at line starts
+	content = quoteLineStartRegex.ReplaceAllString(content, "")
+	// Collapse midline '>' quote markers (e.g., >>>> >>>>) into a single space
+	content = quoteMidRegex.ReplaceAllString(content, " ")
 
 	// Normalize whitespace
 	content = whitespaceRegex.ReplaceAllString(content, " ")
@@ -82,6 +88,9 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 	prep = controlCharRegex.ReplaceAllString(prep, "")
 	prep = junkSymbolsRegex.ReplaceAllString(prep, "")
 	prep = emailQuotingRegex.ReplaceAllString(prep, "")
+	// Strip leading '>' markers and collapse midline quote markers
+	prep = quoteLineStartRegex.ReplaceAllString(prep, "")
+	prep = quoteMidRegex.ReplaceAllString(prep, " ")
 	cleaned := prep
 
 	if maxExcerpts <= 0 {
