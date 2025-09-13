@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -60,28 +61,32 @@ var heavySem = make(chan struct{}, 1)
 
 // SearchEngine handles the multi-word search logic
 type SearchEngine struct {
-	SearchWords  []string
-	ExcludeWords []string
-	FileTypes    []string
-	IncludeCode  bool
-	Registry     *ExtractorRegistry
-	Distance     int
-	Silent       bool
+	SearchWords       []string
+	ExcludeWords      []string
+	FileTypes         []string
+	IncludeCode       bool
+	Registry          *ExtractorRegistry
+	Distance          int
+	Silent            bool
+	HeavyConcurrency  int
+	FileTimeoutBinary time.Duration
 
 	// Optional progress callback (nil if unused)
 	OnProgress ProgressFunc
 }
 
 // NewSearchEngine creates a new search engine instance
-func NewSearchEngine(searchWords, excludeWords []string, fileTypes []string, includeCode bool) *SearchEngine {
+func NewSearchEngine(searchWords, excludeWords []string, fileTypes []string, includeCode bool, heavyConcurrency int, fileTimeoutBinary int) *SearchEngine {
 	return &SearchEngine{
-		SearchWords:  searchWords,
-		ExcludeWords: excludeWords,
-		FileTypes:    fileTypes,
-		IncludeCode:  includeCode,
-		Registry:     NewExtractorRegistry(),
-		Distance:     5000,
-		Silent:       false,
+		SearchWords:       searchWords,
+		ExcludeWords:      excludeWords,
+		FileTypes:         fileTypes,
+		IncludeCode:       includeCode,
+		Registry:          NewExtractorRegistry(),
+		Distance:          5000,
+		Silent:            false,
+		HeavyConcurrency:  heavyConcurrency,
+		FileTimeoutBinary: time.Duration(fileTimeoutBinary) * time.Millisecond,
 	}
 }
 
@@ -143,7 +148,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 
 	var matchingFiles []string
 	processed := 0
-	cm := NewConcurrencyManager(1) // Single slot for heavy ops
+	cm := NewConcurrencyManager(se.HeavyConcurrency)
 
 	for _, filePath := range candidateFiles {
 		processed++
@@ -163,12 +168,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 		// Check for excluded extensions
 		ext := filepath.Ext(filePath)
 		excludeByExt := false
-		for _, exclude := range extExcludes {
-			if ext == exclude {
-				excludeByExt = true
-				break
-			}
-		}
+		excludeByExt = slices.Contains(extExcludes, ext)
 		if excludeByExt {
 			continue
 		}
@@ -219,7 +219,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 					var extErr error
 					err := cm.ExecuteWithTimeout(func() {
 						extractedText, extErr = extractor.ExtractText([]byte(content))
-					}, 1500*time.Millisecond)
+					}, se.FileTimeoutBinary)
 					if err != nil || extErr != nil {
 						if !se.Silent {
 							if extErr != nil {
@@ -264,7 +264,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 					var extErr error
 					err := cm.ExecuteWithTimeout(func() {
 						extractedText, extErr = extractor.ExtractText([]byte(rawContent))
-					}, 1500*time.Millisecond)
+					}, se.FileTimeoutBinary)
 					if err != nil || extErr != nil {
 						if !se.Silent {
 							if extErr != nil {
@@ -315,7 +315,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				var extErr error
 				err := cm.ExecuteWithTimeout(func() {
 					out, extErr = extractor.ExtractText([]byte(rawContent))
-				}, 1500*time.Millisecond)
+				}, se.FileTimeoutBinary)
 				if err != nil || extErr != nil {
 					if !se.Silent {
 						if extErr != nil {
@@ -357,7 +357,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 // ExtractAndBuildResults extracts content and builds search results
 func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]SearchResult, error) {
 	results := make([]SearchResult, 0, len(matchingFiles))
-	cm := NewConcurrencyManager(1)
+	cm := NewConcurrencyManager(se.HeavyConcurrency)
 
 	for _, filePath := range matchingFiles {
 		var content string
@@ -390,7 +390,7 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 			if extractor, exists := se.Registry.GetExtractor(ext); exists {
 				err = cm.ExecuteWithTimeout(func() {
 					content, err = extractor.ExtractText([]byte(rawContent))
-				}, 1500*time.Millisecond)
+				}, se.FileTimeoutBinary)
 				if err != nil {
 					if !se.Silent {
 						fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, err)

@@ -18,7 +18,7 @@ import (
 )
 
 // Embedded version (overridden via -ldflags "-X main.version=X.Y")
-var version = "0.1"
+
 var startWall time.Time
 
 // Global progress streaming
@@ -42,10 +42,12 @@ type model struct {
 	height int
 
 	// Search parameters
-	searchWords  []string
-	excludeWords []string
-	includeCode  bool
-	distance     int
+	searchWords       []string
+	excludeWords      []string
+	includeCode       bool
+	distance          int
+	heavyConcurrency  int
+	fileTimeoutBinary int
 
 	// UI state
 	confirmSelected string // "yes" or "no"
@@ -129,6 +131,8 @@ func (m model) runSearch() tea.Cmd {
 		m.excludeWords,
 		fileTypes,
 		m.includeCode,
+		m.heavyConcurrency,
+		m.fileTimeoutBinary,
 	)
 	se.Silent = true
 	// Override default proximity window if provided
@@ -293,7 +297,7 @@ func (m model) View() string {
 	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc, width-4)))
 
 	// Engine line with cores + RAM/CPU live — use a distinct color
-	engine := fmt.Sprintf("⚙️ Engine: Workers: 1%s", m.memUsageText)
+	engine := fmt.Sprintf("⚙️ Engine: Concurrency: %d%s", m.heavyConcurrency, m.memUsageText)
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7")) // Tokyo Night magenta
 	headerLines = append(headerLines, engineStyled.Render(engine))
 	// Elapsed search time
@@ -690,7 +694,7 @@ func (m model) memUsageTick() tea.Cmd {
 				}
 			}
 		}
-		memText := fmt.Sprintf(" • Go Heap: %3.0f MB • Resident: %3.0f MB", heapMB, rssMB)
+		memText := fmt.Sprintf(" • Temporary: %2.0f MB • Resident: %2.0f MB", heapMB, rssMB)
 
 		// CPU (user+sys vs wall)
 		now := time.Now()
@@ -753,75 +757,6 @@ func sampleCPUPercent(now time.Time, proc time.Duration, cores int) float64 {
 	return pct
 }
 
-// Arguments for CLI flags (used to seed TUI)
-type Arguments struct {
-	SearchWords  []string
-	ExcludeWords []string
-	IncludeCode  bool
-	Distance     int
-}
-
-// parseArguments parses command line args
-func parseArguments(args []string) *Arguments {
-	res := &Arguments{
-		SearchWords:  []string{},
-		ExcludeWords: []string{},
-		IncludeCode:  false,
-		Distance:     0,
-	}
-
-	parsingExcludes := false
-	expectDistance := false
-
-	for _, a := range args {
-		if expectDistance {
-			if n, err := strconv.Atoi(a); err == nil && n > 0 {
-				res.Distance = n
-			}
-			expectDistance = false
-			continue
-		}
-		switch a {
-		case "--code":
-			res.IncludeCode = true
-		case "--not":
-			parsingExcludes = true
-		case "--distance", "-distance":
-			expectDistance = true
-		case "--help", "-h":
-			showUsage()
-			os.Exit(0)
-		case "--version", "-v":
-			showVersion()
-			os.Exit(0)
-		default:
-			if parsingExcludes {
-				res.ExcludeWords = append(res.ExcludeWords, a)
-			} else {
-				res.SearchWords = append(res.SearchWords, a)
-			}
-		}
-	}
-	return res
-}
-
-// showUsage (basic)
-func showUsage() {
-	fmt.Println(headerStyle.Render("garp - High-Performance Document Search Tool (Pure Go)"))
-	fmt.Println()
-	fmt.Printf("%sUSAGE:%s\n", subHeaderStyle.Render("USAGE:"), "")
-	fmt.Printf("  garp [--code] [--distance N] word1 word2 [...]\n")
-	fmt.Printf("  garp [--code] [--distance N] word1 word2 --not excludeword [...]\n")
-	fmt.Println()
-}
-
-// showVersion
-func showVersion() {
-	fmt.Println(headerStyle.Render("garp v" + version))
-	fmt.Println("High-Performance Document Search Tool")
-	fmt.Println("Pure Go Implementation")
-}
-
 // main: seed TUI, run with alt screen
 func main() {
 	// Parse args
@@ -833,22 +768,24 @@ func main() {
 
 	// Seed model
 	m := model{
-		results:         []search.SearchResult{},
-		currentPage:     0,
-		pageSize:        1,
-		totalPages:      0,
-		searchTime:      0,
-		quitting:        false,
-		loading:         true,
-		width:           0,
-		height:          0,
-		searchWords:     args.SearchWords,
-		excludeWords:    args.ExcludeWords,
-		includeCode:     args.IncludeCode,
-		distance:        args.Distance,
-		confirmSelected: "yes",
-		memUsageText:    "",
-		progressText:    "",
+		results:           []search.SearchResult{},
+		currentPage:       0,
+		pageSize:          1,
+		totalPages:        0,
+		searchTime:        0,
+		quitting:          false,
+		loading:           true,
+		width:             0,
+		height:            0,
+		searchWords:       args.SearchWords,
+		excludeWords:      args.ExcludeWords,
+		includeCode:       args.IncludeCode,
+		distance:          args.Distance,
+		heavyConcurrency:  args.HeavyConcurrency,
+		fileTimeoutBinary: args.FileTimeoutBinary,
+		confirmSelected:   "yes",
+		memUsageText:      "",
+		progressText:      "",
 	}
 
 	// Run Bubbletea with alt screen
