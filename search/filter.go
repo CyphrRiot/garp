@@ -661,6 +661,32 @@ func StreamContainsAllWordsDecidedWithCap(filePath string, words []string, capBy
 	}
 }
 
+// BinaryStreamingPrefilterDecided performs a bounded streaming prefilter for select binary types
+// (eml, msg, mbox, rtf). It returns:
+//   - found = true, decided = true   => conclusively found (prefilter passes)
+//   - found = false, decided = true  => conclusively absent (prefilter fails; safe to skip)
+//   - found = false, decided = false => inconclusive (do not skip; proceed to extraction)
+//
+// It uses the existing StreamContainsAllWordsDecidedWithCap checker and, for 3+ terms,
+// picks two longest terms as a rarity proxy to improve prefilter efficiency.
+func BinaryStreamingPrefilterDecided(filePath string, words []string, capBytes int64) (bool, bool) {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".eml", ".msg", ".mbox", ".rtf":
+		termsToCheck := words
+		if len(words) >= 3 {
+			terms := make([]string, len(words))
+			copy(terms, words)
+			sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
+			termsToCheck = terms[:2]
+		}
+		return StreamContainsAllWordsDecidedWithCap(filePath, termsToCheck, capBytes)
+	default:
+		// For other types, leave decision to the main path.
+		return false, false
+	}
+}
+
 // CheckFileContainsAllWords checks if a file contains all search words
 func CheckFileContainsAllWords(filePath string, words []string, distance int, silent bool) (bool, error) {
 	// Fast prefilter: require presence of all words before full distance check

@@ -195,18 +195,10 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 		if len(se.SearchWords) > 1 {
 			if IsBinaryFormat(filePath) {
 				ext := filepath.Ext(filePath)
-				// Prefilter EML/MSG: plural-aware rarest-terms (or all terms) via streaming (bounded). Skip if conclusively absent.
-				if strings.EqualFold(ext, ".eml") || strings.EqualFold(ext, ".msg") {
-					termsToCheck := se.SearchWords
-					if len(se.SearchWords) >= 3 {
-						terms := make([]string, len(se.SearchWords))
-						copy(terms, se.SearchWords)
-						sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
-						termsToCheck = terms[:2]
-					}
-					if ok, decided := StreamContainsAllWordsDecidedWithCap(filePath, termsToCheck, 1*1024*1024); decided && !ok {
-						continue
-					}
+				// Bounded streaming prefilter for supported binary types (EML/MSG/MBOX/RTF).
+				// Skip only when conclusively absent; proceed when undecided.
+				if ok, decided := BinaryStreamingPrefilterDecided(filePath, se.SearchWords, 1*1024*1024); decided && !ok {
+					continue
 				}
 				// For binary files, extract text first
 				content, _, err := GetFileContent(filePath)

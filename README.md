@@ -2,7 +2,7 @@
 
 # :: garp ::
 
-![Version](https://img.shields.io/badge/version-0.2-blue?labelColor=0052cc)
+![Version](https://img.shields.io/badge/version-0.3-blue?labelColor=0052cc)
 ![License](https://img.shields.io/github/license/CyphrRiot/garp?color=4338ca&labelColor=3730a3)
 ![Platform](https://img.shields.io/badge/platform-linux-4338ca?logo=linux&logoColor=white&labelColor=3730a3)
 ![Platform](https://img.shields.io/badge/platform-windows-4338ca?logo=windows&logoColor=white&labelColor=3730a3)
@@ -16,7 +16,7 @@
 
 A high‑performance, pure‑Go document search tool with a clean TUI. garp finds files that contain ALL specified terms within a proximity window and supports many common document formats (including emails, Office files, documents, and PDFs) with pure‑Go extractors.
 
-![garp TUI](images/garp.png)
+![garp TUI](garp.png)
 
 ## Quick Usage
 
