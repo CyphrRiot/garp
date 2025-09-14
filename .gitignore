@@ -1,5 +1,6 @@
 # never add the plan.md
 plan.md
+go.sum
 
 # Binaries
 *.exe

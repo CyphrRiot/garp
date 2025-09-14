@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"find-words/search"
 )
@@ -20,6 +22,7 @@ type Arguments struct {
 	IncludeCode       bool
 	Distance          int
 	HeavyConcurrency  int
+	FilterWorkers     int
 	FileTimeoutBinary int
 }
 
@@ -31,6 +34,7 @@ func parseArguments(args []string) *Arguments {
 		IncludeCode:       false,
 		Distance:          0,
 		HeavyConcurrency:  2,
+		FilterWorkers:     2,
 		FileTimeoutBinary: 1000,
 	}
 
@@ -38,6 +42,7 @@ func parseArguments(args []string) *Arguments {
 	expectDistance := false
 	expectHeavy := false
 	expectTimeout := false
+	expectWorkers := false
 
 	for _, a := range args {
 		if expectDistance {
@@ -61,6 +66,13 @@ func parseArguments(args []string) *Arguments {
 			expectTimeout = false
 			continue
 		}
+		if expectWorkers {
+			if n, err := strconv.Atoi(a); err == nil && n > 0 {
+				result.FilterWorkers = n
+			}
+			expectWorkers = false
+			continue
+		}
 		switch a {
 		case "--code":
 			result.IncludeCode = true
@@ -72,6 +84,8 @@ func parseArguments(args []string) *Arguments {
 			expectHeavy = true
 		case "--file-timeout-binary":
 			expectTimeout = true
+		case "--workers", "-workers":
+			expectWorkers = true
 		case "--help", "-h":
 			showUsage()
 			os.Exit(0)
@@ -90,14 +104,45 @@ func parseArguments(args []string) *Arguments {
 	return result
 }
 
-// showUsage (basic)
+// showUsage (styled)
 func showUsage() {
-	// Styling variables headerStyle/subHeaderStyle are provided in tui.go (same package).
-	fmt.Println(headerStyle.Render("garp - High-Performance Document Search Tool (Pure Go)"))
 	fmt.Println()
-	fmt.Printf("%sUSAGE:%s\n", subHeaderStyle.Render("USAGE:"), "")
-	fmt.Printf("  garp [--code] [--distance N] [--heavy-concurrency N] [--file-timeout-binary N] word1 word2 [...]\n")
-	fmt.Printf("  garp [--code] [--distance N] [--heavy-concurrency N] [--file-timeout-binary N] word1 word2 --not excludeword [...]\n")
+	// Styled CLI help matching the TUI theme
+	logoTop := " █▀▀ ▄▀█ █▀█ █▀█"
+	logoBottom := fmt.Sprintf(" █▄█ █▀█ █▀▄ █▀▀  v%s", version)
+	// Pad lines to equal width and render left-aligned to avoid odd spacing
+	if len(logoTop) < len(logoBottom) {
+		logoTop += strings.Repeat(" ", len(logoBottom)-len(logoTop))
+	} else if len(logoBottom) < len(logoTop) {
+		logoBottom += strings.Repeat(" ", len(logoTop)-len(logoBottom))
+	}
+	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Render(logoTop + "\n" + logoBottom))
+	fmt.Println()
+
+	// Usage
+	fmt.Println(subHeaderStyle.Render("USAGE"))
+	fmt.Println(infoStyle.Render(wrapTextWithIndent("  garp ", "[--code] [--distance N] [--heavy-concurrency N] [--workers N] [--file-timeout-binary N] <word1> <word2> ... [--not <exclude1> <exclude2> ...]", 100)))
+	fmt.Println()
+
+	// Flags
+	fmt.Println(subHeaderStyle.Render("FLAGS"))
+	fmt.Println(infoStyle.Render("  --code                  Include code files in the search"))
+	fmt.Println(infoStyle.Render("  --distance N            Proximity window in characters (default 5000)"))
+	fmt.Println(infoStyle.Render("  --heavy-concurrency N   Concurrent heavy extractions (default 2)"))
+	fmt.Println(infoStyle.Render("  --workers N             Stage 2 text filter workers (default 2)"))
+	fmt.Println(infoStyle.Render("  --file-timeout-binary N Timeout in ms for binary extraction (default 1000)"))
+	fmt.Println(infoStyle.Render("  --not ...               Tokens after this are exclusions;"))
+	fmt.Println(infoStyle.Render("                          extensions starting with '.' exclude types; others exclude words"))
+	fmt.Println(infoStyle.Render("  --help, -h              Show help"))
+	fmt.Println(infoStyle.Render("  --version, -v           Show version"))
+	fmt.Println()
+
+	// Examples
+	fmt.Println(subHeaderStyle.Render("EXAMPLES"))
+	fmt.Println(infoStyle.Render("  garp contract payment agreement"))
+	fmt.Println(infoStyle.Render("  garp contract payment agreement --distance 200"))
+	fmt.Println(infoStyle.Render("  garp mutex changed --code"))
+	fmt.Println(infoStyle.Render("  garp bank wire update --not .txt test"))
 	fmt.Println()
 }
 
@@ -133,6 +178,7 @@ func Run() int {
 		distance:          args.Distance,
 		heavyConcurrency:  args.HeavyConcurrency,
 		fileTimeoutBinary: args.FileTimeoutBinary,
+		filterWorkers:     args.FilterWorkers,
 		confirmSelected:   "yes",
 		memUsageText:      "",
 		progressText:      "",

@@ -69,6 +69,7 @@ type SearchEngine struct {
 	Distance          int
 	Silent            bool
 	HeavyConcurrency  int
+	FilterWorkers     int
 	FileTimeoutBinary time.Duration
 
 	// Optional progress callback (nil if unused)
@@ -86,8 +87,18 @@ func NewSearchEngine(searchWords, excludeWords []string, fileTypes []string, inc
 		Distance:          5000,
 		Silent:            false,
 		HeavyConcurrency:  heavyConcurrency,
+		FilterWorkers:     2,
 		FileTimeoutBinary: time.Duration(fileTimeoutBinary) * time.Millisecond,
 	}
+}
+
+// NewSearchEngineWithWorkers creates a new search engine instance with an explicit filter worker count
+func NewSearchEngineWithWorkers(searchWords, excludeWords []string, fileTypes []string, includeCode bool, heavyConcurrency int, fileTimeoutBinary int, filterWorkers int) *SearchEngine {
+	se := NewSearchEngine(searchWords, excludeWords, fileTypes, includeCode, heavyConcurrency, fileTimeoutBinary)
+	if filterWorkers > 0 {
+		se.FilterWorkers = filterWorkers
+	}
+	return se
 }
 
 // DiscoverCandidates finds files containing the first search word

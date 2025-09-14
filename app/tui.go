@@ -93,6 +93,7 @@ type model struct {
 	distance          int
 	heavyConcurrency  int
 	fileTimeoutBinary int
+	filterWorkers     int
 
 	// UI state
 	confirmSelected string // "yes" or "no"
@@ -444,13 +445,14 @@ func (m model) View() string {
 func (m model) runSearch() tea.Cmd {
 	// Prepare engine and wire progress callback
 	fileTypes := config.BuildRipgrepFileTypes(m.includeCode)
-	se := search.NewSearchEngine(
+	se := search.NewSearchEngineWithWorkers(
 		m.searchWords,
 		m.excludeWords,
 		fileTypes,
 		m.includeCode,
 		m.heavyConcurrency,
 		m.fileTimeoutBinary,
+		m.filterWorkers,
 	)
 	se.Silent = true
 	// Override default proximity window if provided
