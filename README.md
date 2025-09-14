@@ -16,6 +16,8 @@
 
 A high‑performance, pure‑Go document search tool with a clean TUI. garp finds files that contain ALL specified terms within a proximity window and supports many common document formats (including emails, Office files, documents, and PDFs) with pure‑Go extractors.
 
+No relation to the [John Irving novel of the same name](https://en.wikipedia.org/wiki/The_World_According_to_Garp). More like a mispronounced version of "grep" that's easy to remember.
+
 ![garp TUI](garp.png)
 
 ## Quick Usage

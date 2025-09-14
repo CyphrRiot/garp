@@ -315,7 +315,7 @@ func (m model) View() string {
 		minutes = m.searchTime.Minutes()
 	}
 	elapsed := fmt.Sprintf("⏱️ Searched:  %.2f minutes • Matched: %d of %d files 📄 PDF: Scanned %d • Skipped %d", minutes, len(m.results), m.totalFiles, m.pdfScanned, m.pdfSkipped)
-	elapsedStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#9aa5ce"))
+	elapsedStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#8ab4f8"))
 	headerLines = append(headerLines, elapsedStyled.Render(elapsed))
 
 	// moved search terms line above, right after logo
