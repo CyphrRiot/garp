@@ -698,7 +698,8 @@ func CheckFileContainsAllWords(filePath string, words []string, distance int, si
 	if err != nil {
 		return false, err
 	}
-	return CheckTextContainsAllWords(content, words, distance), nil
+	// Clean the content so matching aligns with excerpt generation
+	return CheckTextContainsAllWords(CleanContent(content), words, distance), nil
 }
 
 // CheckFileContainsExcludeWords checks if a file contains any exclude words

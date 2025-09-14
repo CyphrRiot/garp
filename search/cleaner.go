@@ -38,6 +38,17 @@ var (
 	quoteMidRegex       = regexp.MustCompile(`\s*>+\s*`)
 )
 
+var excerptContextLimit int // 0 means auto (use default heuristic)
+
+// SetExcerptContextLimit allows the engine to set an excerpt window hint (usually the distance).
+// Use 0 to reset to automatic behavior.
+func SetExcerptContextLimit(n int) {
+	if n < 0 {
+		n = 0
+	}
+	excerptContextLimit = n
+}
+
 // CleanContent removes markup, headers, and other noise from content
 func CleanContent(content string) string {
 	// Remove CSS and JavaScript blocks first
@@ -115,121 +126,26 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 	}
 
 	// Clamp window for scanning sentence boundaries around each match
-	const maxContext = 800 // total max chars considered per match window
+	maxContext := func() int {
+		// Base from configured excerptContextLimit (typically the search distance). 0 means auto default.
+		base := excerptContextLimit
+		if base <= 0 {
+			base = 800
+		}
+		// Scale relative to distance but clamp to keep excerpts readable and performant.
+		win := base * 2
+		if win < 200 {
+			win = 200
+		}
+		if win > 4000 {
+			win = 4000
+		}
+		return win
+	}()
 	excerpts := make([]string, 0, maxExcerpts)
 	seen := make(map[string]struct{})
 
-	// Ensure at least one sentence per term (when possible)
-	for _, re := range termRE {
-		if len(excerpts) >= maxExcerpts {
-			break
-		}
-		locs := re.FindAllStringIndex(cleaned, 3) // up to 3 matches per term
-		for _, loc := range locs {
-			if len(excerpts) >= maxExcerpts {
-				break
-			}
-			start := loc[0]
-			end := loc[1]
-
-			// Find local sentence boundaries with clamped scan (email-aware + punctuation)
-			left := start
-			limitLeft := left - maxContext/2
-			if limitLeft < 0 {
-				limitLeft = 0
-			}
-			// Expand left until punctuation or email header boundary
-			for left > limitLeft {
-				if cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?' {
-					break
-				}
-				// Stop at email header lines (From:, To:, Subject:, Date:, etc.)
-				if cleaned[left] == '\n' {
-					ls := left + 1
-					le := ls
-					for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
-						le++
-					}
-					if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
-						break
-					}
-				}
-				left--
-			}
-			if left > 0 && (cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?') {
-				left++
-			} else if left <= limitLeft {
-				// Paragraph fallback: last blank line in window
-				if idx := strings.LastIndex(cleaned[limitLeft:start], "\n\n"); idx != -1 {
-					left = limitLeft + idx + 2
-				} else {
-					// Single newline fallback
-					if idx := strings.LastIndex(cleaned[limitLeft:start], "\n"); idx != -1 {
-						left = limitLeft + idx + 1
-					} else {
-						left = limitLeft
-					}
-				}
-			}
-
-			right := end
-			limitRight := right + maxContext/2
-			if limitRight > len(cleaned) {
-				limitRight = len(cleaned)
-			}
-			// Expand right until punctuation or email header boundary
-			for right < limitRight {
-				if cleaned[right] == '.' || cleaned[right] == '!' || cleaned[right] == '?' {
-					right++
-					break
-				}
-				// Stop at email header lines (From:, To:, Subject:, Date:, etc.)
-				if cleaned[right] == '\n' {
-					ls := right + 1
-					le := ls
-					for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
-						le++
-					}
-					if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
-						break
-					}
-				}
-				right++
-			}
-			if right >= limitRight {
-				// Paragraph fallback: next blank line in window
-				if idx := strings.Index(cleaned[end:limitRight], "\n\n"); idx != -1 {
-					right = end + idx
-				} else if idx := strings.Index(cleaned[end:limitRight], "\n"); idx != -1 {
-					right = end + idx
-				} else {
-					right = limitRight
-				}
-			}
-
-			// Build sentence snippet and normalize whitespace
-			ex := strings.TrimSpace(cleaned[left:right])
-			if ex == "" {
-				continue
-			}
-			ex = strings.ReplaceAll(ex, "\n", " ")
-			ex = strings.ReplaceAll(ex, "\t", " ")
-			ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
-
-			if _, ok := seen[ex]; ok {
-				continue
-			}
-			seen[ex] = struct{}{}
-			excerpts = append(excerpts, ex)
-		}
-	}
-
-	if len(excerpts) > 0 {
-		return excerpts
-	}
-
-	// Sliding-window strategy: find the smallest span that covers at least one occurrence
-	// of every search term and build an excerpt from that span.
+	// Sliding-window strategy (early): pick smallest span covering all terms and prefer that excerpt first.
 	if len(termRE) > 1 {
 		type tmatch struct {
 			pos int
@@ -338,22 +254,151 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 					}
 				}
 
-				// Build normalized excerpt and dedupe
-				ex := strings.TrimSpace(cleaned[left:right])
-				if ex != "" {
+				// Build stitched, sentence-aware excerpt and dedupe
+				snippet := strings.TrimSpace(cleaned[left:right])
+				if snippet != "" {
+					// Split the snippet into sentences and keep only those containing any search term
+					sentences := splitIntoSentences(snippet)
+					parts := make([]string, 0, len(sentences))
+					for _, s := range sentences {
+						st := strings.TrimSpace(s)
+						if st == "" {
+							continue
+						}
+						if containsAnySearchTerm(st, searchTerms) {
+							parts = append(parts, st)
+						}
+					}
+					var ex string
+					if len(parts) > 0 {
+						// Join with ellipses for clarity between separate sentences
+						ex = strings.Join(parts, " … ")
+					} else {
+						// Fallback to the raw snippet window if no sentence matched the filter
+						ex = snippet
+					}
+					// Normalize whitespace for display
 					ex = strings.ReplaceAll(ex, "\n", " ")
 					ex = strings.ReplaceAll(ex, "\t", " ")
 					ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
 					if _, ok := seen[ex]; !ok {
 						seen[ex] = struct{}{}
 						excerpts = append(excerpts, ex)
-						if len(excerpts) >= maxExcerpts {
-							return excerpts
-						}
+						// Prefer the all-terms excerpt first; return early if we have it
+						return excerpts
 					}
 				}
 			}
 		}
+	}
+
+	// Ensure at least one sentence per term (when possible)
+	for _, re := range termRE {
+		if len(excerpts) >= maxExcerpts {
+			break
+		}
+		locs := re.FindAllStringIndex(cleaned, 3) // up to 3 matches per term
+		for _, loc := range locs {
+			if len(excerpts) >= maxExcerpts {
+				break
+			}
+			start := loc[0]
+			end := loc[1]
+
+			// Find local sentence boundaries with clamped scan (email-aware + punctuation)
+			left := start
+			limitLeft := left - maxContext/2
+			if limitLeft < 0 {
+				limitLeft = 0
+			}
+			// Expand left until punctuation or email header boundary
+			for left > limitLeft {
+				if cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?' {
+					break
+				}
+				// Stop at email header lines (From:, To:, Subject:, Date:, etc.)
+				if cleaned[left] == '\n' {
+					ls := left + 1
+					le := ls
+					for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+						le++
+					}
+					if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+						break
+					}
+				}
+				left--
+			}
+			if left > 0 && (cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?') {
+				left++
+			} else if left <= limitLeft {
+				// Paragraph fallback: last blank line in window
+				if idx := strings.LastIndex(cleaned[limitLeft:start], "\n\n"); idx != -1 {
+					left = limitLeft + idx + 2
+				} else {
+					// Single newline fallback
+					if idx := strings.LastIndex(cleaned[limitLeft:start], "\n"); idx != -1 {
+						left = limitLeft + idx + 1
+					} else {
+						left = limitLeft
+					}
+				}
+			}
+
+			right := end
+			limitRight := right + maxContext/2
+			if limitRight > len(cleaned) {
+				limitRight = len(cleaned)
+			}
+			// Expand right until punctuation or email header boundary
+			for right < limitRight {
+				if cleaned[right] == '.' || cleaned[right] == '!' || cleaned[right] == '?' {
+					right++
+					break
+				}
+				// Stop at email header lines (From:, To:, Subject:, Date:, etc.)
+				if cleaned[right] == '\n' {
+					ls := right + 1
+					le := ls
+					for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
+						le++
+					}
+					if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+						break
+					}
+				}
+				right++
+			}
+			if right >= limitRight {
+				// Paragraph fallback: next blank line in window
+				if idx := strings.Index(cleaned[end:limitRight], "\n\n"); idx != -1 {
+					right = end + idx
+				} else if idx := strings.Index(cleaned[end:limitRight], "\n"); idx != -1 {
+					right = end + idx
+				} else {
+					right = limitRight
+				}
+			}
+
+			// Build sentence snippet and normalize whitespace
+			ex := strings.TrimSpace(cleaned[left:right])
+			if ex == "" {
+				continue
+			}
+			ex = strings.ReplaceAll(ex, "\n", " ")
+			ex = strings.ReplaceAll(ex, "\t", " ")
+			ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
+
+			if _, ok := seen[ex]; ok {
+				continue
+			}
+			seen[ex] = struct{}{}
+			excerpts = append(excerpts, ex)
+		}
+	}
+
+	if len(excerpts) > 0 {
+		return excerpts
 	}
 
 	// Fallback: find the first occurrence of any term and expand within a small window

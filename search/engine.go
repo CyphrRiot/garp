@@ -416,8 +416,9 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 			}
 		}
 
-		// Clean content and extract excerpts
+		// Clean content and extract excerpts (make excerpt window reflect distance)
 		cleanContent := CleanContent(content)
+		SetExcerptContextLimit(se.Distance)
 		excerpts := ExtractMeaningfulExcerpts(cleanContent, se.SearchWords, 10)
 
 		// Highlight search terms in excerpts
