@@ -5,7 +5,7 @@ BINARY_PATH=bin/$(BINARY_NAME)
 GO_FILES=$(shell find . -name "*.go" -type f)
 
 # Version embedding
-VERSION=0.3
+VERSION=0.4
 LDFLAGS=-X find-words/app.version=$(VERSION)
 
 # Default target

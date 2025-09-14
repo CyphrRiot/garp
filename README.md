@@ -2,7 +2,7 @@
 
 # :: garp ::
 
-![Version](https://img.shields.io/badge/version-0.3-blue?labelColor=0052cc)
+![Version](https://img.shields.io/badge/version-0.4-blue?labelColor=0052cc)
 ![License](https://img.shields.io/github/license/CyphrRiot/garp?color=4338ca&labelColor=3730a3)
 ![Platform](https://img.shields.io/badge/platform-linux-4338ca?logo=linux&logoColor=white&labelColor=3730a3)
 ![Platform](https://img.shields.io/badge/platform-windows-4338ca?logo=windows&logoColor=white&labelColor=3730a3)
@@ -27,7 +27,7 @@ garp mutex changed --code
 garp bank wire update --not .txt test
 ```
 
-❌ Note: Better PDF search is in progress for an upcoming release.
+ℹ️ Note: PDF handling is conservative in v0.4; improvements are ongoing.
 
 ## ✨ Key Features
 
@@ -35,7 +35,7 @@ garp bank wire update --not .txt test
 - ⚡ High-Performance: multi-core parallel processing
 - 🎯 Multi-word AND logic (unordered) with a proximity window (default 5000 chars)
 - 🧹 Smart content cleaning: strips HTML/CSS/JS, email headers, control chars
-- 📄 Binary document support: .eml, .mbox, .pdf, .docx/.odt, .rtf, .msg (raw)
+- 📄 Binary document support: .eml, .mbox, .pdf, .doc/.docx/.odt, .rtf, .msg (improved); DOC/DOCX/ODT use conservative prefilters
 - 📁 Intelligent file filtering; include code files with `--code`
 - ❌ Advanced exclusion with `--not` for extensions (e.g., `.txt`) and words
 - 💾 Large file handling with safe, size-aware reads
@@ -55,7 +55,7 @@ garp bank wire update --not .txt test
 - Pure Go: zero external tools required
 - Multi‑word AND search (unordered)
   Proximity window (default: 5000 characters) across the matched terms
-- Email/document extraction: EML, MBOX, PDF, DOCX/ODT, RTF (MSG raw)
+- Email/document extraction: EML, MBOX, PDF (guarded), DOC/DOCX/ODT (prefilters), RTF, MSG (improved)
 - Smart cleaning: strips HTML/CSS/JS, email headers, control chars, etc.
 - Beautiful TUI with live progress, paging, and excerpts
 - Optional inclusion of code files
@@ -164,7 +164,7 @@ Binary extraction (pure Go)
 Command
 
 ```
-garp [--code] [--distance N] [--heavy-concurrency N] [--file-timeout-binary N] <word1> <word2> ... [--not <exclude1> <exclude2> ...]
+garp [--code] [--distance N] [--heavy-concurrency N] [--workers N] [--file-timeout-binary N] <word1> <word2> ... [--not <exclude1> <exclude2> ...]
 ```
 
 Flags
@@ -172,6 +172,7 @@ Flags
 - `--code`: include programming/code files in the search
 - `--distance N`: set the proximity window in characters (default 5000)
 - `--heavy-concurrency N`: number of concurrent heavy extractions (default 2)
+- `--workers N`: number of Stage 2 text filter workers (default 2)
 - `--file-timeout-binary N`: timeout in ms for binary file extraction (default 1000)
 - `--not`: everything after this is treated as exclusions
     - Exclusions that start with a dot exclude extensions (e.g., `.txt`, `.pdf`)
@@ -195,7 +196,7 @@ We keep the latest binary in `bin/garp` in this repo for convenience so users ca
 
 ## Versioning
 
-- The current version is tracked in the VERSION file (currently `0.3`).
+- The current version is tracked in the VERSION file (currently `0.4`).
 - The `garp` binary reports this version via `--version`.
 - Releases should be tagged with the same version, and the README badge updated to match.
 
