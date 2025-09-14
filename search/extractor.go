@@ -104,7 +104,7 @@ func (r *ExtractorRegistry) registerBuiltIns() {
 func IsBinaryFormat(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
-	case ".msg", ".docx", ".odt", ".rtf":
+	case ".msg", ".docx", ".odt", ".rtf", ".pdf":
 		return true
 	case ".eml", ".mbox":
 		// EML/MBOX can be text but often encoded
@@ -236,6 +236,15 @@ func (e *PDFExtractor) ExtractText(data []byte) (out string, err error) {
 		return out, nil
 	}
 
+	// Try plain text extraction first; fallback to per-page scan
+	if plain, gerr := reader.GetPlainText(); gerr == nil {
+		pb, _ := io.ReadAll(plain)
+		s := strings.TrimSpace(string(pb))
+		if s != "" {
+			return s, nil
+		}
+	}
+
 	// Extract text page-by-page with panic protection for each page.
 	for i := 1; i <= pages; i++ {
 		func() {
@@ -293,7 +302,7 @@ func PDFContainsAllWordsNoDistance(data []byte, words []string) bool {
 	found := make([]bool, len(words))
 	remaining := len(words)
 	for i, w := range words {
-		pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(w))
+		pattern := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
 		rs[i] = regexp.MustCompile(pattern)
 	}
 
@@ -373,7 +382,7 @@ func PDFHasAllWordsWithinDistanceNoExtract(data []byte, words []string, distance
 	}
 	regexes := make([]*regexp.Regexp, len(words))
 	for i, w := range words {
-		pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(w))
+		pattern := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
 		regexes[i] = regexp.MustCompile(pattern)
 	}
 
@@ -492,7 +501,7 @@ func PDFContainsAllWordsNoDistancePath(path string, words []string) bool {
 	found := make([]bool, len(words))
 	remaining := len(words)
 	for i, w := range words {
-		pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(w))
+		pattern := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
 		rs[i] = regexp.MustCompile(pattern)
 	}
 
@@ -583,7 +592,7 @@ func PDFHasAllWordsWithinDistanceNoExtractPath(path string, words []string, dist
 	// Precompile per-word regex
 	regexes := make([]*regexp.Regexp, len(words))
 	for i, w := range words {
-		pattern := fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(w))
+		pattern := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
 		regexes[i] = regexp.MustCompile(pattern)
 	}
 

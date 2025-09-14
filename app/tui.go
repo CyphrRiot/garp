@@ -554,7 +554,7 @@ func (m model) memUsageTick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
 		// Sample memory and CPU
 		mem, cpu := sampleMemoryAndCPU()
-		return memUsageMsg{Text: fmt.Sprintf(" • Temp Mem %5.1f MB • Total %5.1f MB • CPU %5.1f%%", float64(mem.heap)/(1024*1024), float64(mem.rss)/(1024*1024), cpu)}
+		return memUsageMsg{Text: fmt.Sprintf(" • Temporary %5.1f MB • Total %5.1f MB • CPU %5.1f%%", float64(mem.heap)/(1024*1024), float64(mem.rss)/(1024*1024), cpu)}
 	})
 }
 

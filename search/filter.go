@@ -1,6 +1,7 @@
 package search
 
 import (
+	"archive/zip"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/richardlehane/mscfb"
 
 	"golang.org/x/sys/unix"
 
@@ -595,6 +598,7 @@ func StreamContainsAllWordsDecidedWithCap(filePath string, words []string, capBy
 	// Align with GetFileContent limits, then apply optional capBytes
 	stat, statErr := f.Stat()
 	var maxBytes int64
+	var capped bool
 	if statErr == nil {
 		switch {
 		case stat.Size() > 50*1024*1024:
@@ -609,6 +613,7 @@ func StreamContainsAllWordsDecidedWithCap(filePath string, words []string, capBy
 	}
 	if capBytes > 0 && capBytes < maxBytes {
 		maxBytes = capBytes
+		capped = true
 	}
 
 	foundFlags := make([]bool, len(res))
@@ -620,6 +625,10 @@ func StreamContainsAllWordsDecidedWithCap(filePath string, words []string, capBy
 	for {
 		if total >= maxBytes {
 			_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+			if !capped {
+				// We reached the end of file without finding all terms
+				return false, true // decided miss
+			}
 			return false, false // budget reached; undecided
 		}
 		toRead := chunkSize
@@ -673,6 +682,7 @@ func BinaryStreamingPrefilterDecided(filePath string, words []string, capBytes i
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
 	case ".eml", ".msg", ".mbox", ".rtf":
+		// Existing streaming prefilter for email/rtf-like formats
 		termsToCheck := words
 		if len(words) >= 3 {
 			terms := make([]string, len(words))
@@ -681,6 +691,293 @@ func BinaryStreamingPrefilterDecided(filePath string, words []string, capBytes i
 			termsToCheck = terms[:2]
 		}
 		return StreamContainsAllWordsDecidedWithCap(filePath, termsToCheck, capBytes)
+
+	case ".docx", ".odt":
+		// Conservative ZIP sniff + capped XML stream:
+		// - .docx: stream "word/document.xml"
+		// - .odt:  stream "content.xml"
+		// If we can conclusively find all words: return (true, true)
+		// If we can conclusively determine absence at EOF: return (false, true)
+		// Otherwise (errors, missing entries, or cap reached): return (false, false)
+		f, err := os.Open(filePath)
+		if err != nil {
+			return false, false
+		}
+		defer f.Close()
+
+		st, err := f.Stat()
+		if err != nil {
+			return false, false
+		}
+
+		zr, err := zip.NewReader(f, st.Size())
+		if err != nil {
+			return false, false
+		}
+
+		var target string
+		if ext == ".docx" {
+			target = "word/document.xml"
+		} else {
+			target = "content.xml"
+		}
+
+		var xmlFile *zip.File
+		for _, file := range zr.File {
+			if file.Name == target {
+				xmlFile = file
+				break
+			}
+		}
+		if xmlFile == nil {
+			// Can't locate the main document stream; undecided
+			return false, false
+		}
+
+		rc, err := xmlFile.Open()
+		if err != nil {
+			return false, false
+		}
+		defer rc.Close()
+
+		// Build plural-aware whole-word regexes
+		res := make([]*regexp.Regexp, 0, len(words))
+		for _, w := range words {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
+			res = append(res, regexp.MustCompile(pat))
+		}
+		if len(res) == 0 {
+			return true, true
+		}
+
+		// Stream the XML entry with a cap and overlap window
+		const chunkSize = 64 * 1024
+		const overlap = 128
+
+		maxBytes := capBytes
+		if maxBytes <= 0 {
+			// Reasonable default cap for XML streaming
+			maxBytes = 5 * 1024 * 1024
+		}
+
+		foundFlags := make([]bool, len(res))
+		remaining := len(res)
+
+		var total int64
+		prev := make([]byte, 0, overlap)
+		buf := make([]byte, chunkSize)
+
+		for {
+			if total >= maxBytes {
+				// Budget reached; undecided
+				return false, false
+			}
+			toRead := chunkSize
+			if rem := maxBytes - total; rem < int64(toRead) {
+				toRead = int(rem)
+			}
+			n, rErr := rc.Read(buf[:toRead])
+			if n > 0 {
+				combined := append(prev, buf[:n]...)
+				for i, re := range res {
+					if !foundFlags[i] && re.Match(combined) {
+						foundFlags[i] = true
+						remaining--
+						if remaining == 0 {
+							return true, true
+						}
+					}
+				}
+
+				// Maintain overlap
+				if n >= overlap {
+					prev = append(prev[:0], buf[n-overlap:n]...)
+				} else {
+					if len(combined) >= overlap {
+						prev = append(prev[:0], combined[len(combined)-overlap:]...)
+					} else {
+						prev = append(prev[:0], combined...)
+					}
+				}
+				total += int64(n)
+			}
+
+			if rErr == io.EOF {
+				// End of stream; conclusively absent
+				return false, true
+			}
+			if rErr != nil {
+				// I/O/read error on entry: undecided
+				return false, false
+			}
+		}
+
+	case ".doc":
+		// Conservative OLE (.doc) prefilter:
+		// - Open the compound file and stream a few likely text-bearing streams (WordDocument, 1Table, 0Table)
+		// - Salvage text best-effort (UTF-16 if possible, else ASCII with whitespace normalization)
+		// - If all words are conclusively found within a capped budget: (true, true)
+		// - Otherwise: (false, false) — undecided (never mark as conclusively absent)
+		f, err := os.Open(filePath)
+		if err != nil {
+			return false, false
+		}
+		defer f.Close()
+
+		cf, err := mscfb.New(f)
+		if err != nil {
+			return false, false
+		}
+
+		// Build plural-aware whole-word regexes
+		res := make([]*regexp.Regexp, 0, len(words))
+		for _, w := range words {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
+			res = append(res, regexp.MustCompile(pat))
+		}
+		if len(res) == 0 {
+			return true, true
+		}
+
+		// Budget: total bytes across considered streams
+		maxBytes := capBytes
+		if maxBytes <= 0 {
+			maxBytes = 2 * 1024 * 1024 // 2MB default cap
+		}
+		var total int64
+
+		// Prioritized streams commonly containing main/body text
+		targetStreams := map[string]bool{
+			"WordDocument": true,
+			"1Table":       true,
+			"0Table":       true,
+		}
+
+		foundFlags := make([]bool, len(res))
+		remaining := len(res)
+
+		for ent, err2 := cf.Next(); err2 == nil; ent, err2 = cf.Next() {
+			if total >= maxBytes {
+				break
+			}
+			name := ent.Name
+			if !targetStreams[name] {
+				continue
+			}
+
+			// Read a limited portion of the stream
+			budget := maxBytes - total
+			if budget <= 0 {
+				break
+			}
+			data, _ := io.ReadAll(io.LimitReader(ent, budget))
+			total += int64(len(data))
+			if len(data) == 0 {
+				continue
+			}
+
+			// Best-effort text salvage
+			var text string
+			if s, ok := tryDecodeUTF16BestEffort(data); ok {
+				text = s
+			} else {
+				buf := make([]rune, 0, len(data))
+				for _, b := range data {
+					if b == 0x09 || b == 0x0a || b == 0x0d || (b >= 0x20 && b <= 0x7e) {
+						buf = append(buf, rune(b))
+					} else {
+						buf = append(buf, ' ')
+					}
+				}
+				text = strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(string(buf), " "))
+			}
+
+			for i, re := range res {
+				if !foundFlags[i] && re.MatchString(text) {
+					foundFlags[i] = true
+					remaining--
+					if remaining == 0 {
+						return true, true
+					}
+				}
+			}
+		}
+
+		// Not conclusively found within our conservative budget; leave as undecided
+		return false, false
+
+	case ".pdf":
+		// Safe PDF prefilters with strict caps/timeouts + raw-byte fallback.
+		// - For 1 term: presence-only page scan with a hard timeout; if inconclusive/negative, fall back to capped raw-byte clean + presence check.
+		// - For 2+ terms: distance-window page scan; if inconclusive/negative, fall back to capped raw-byte clean + distance check.
+		// Undecided must never cause skipping.
+		// Determine cap budget (bytes) for raw-byte fallback
+		maxCap := capBytes
+		if maxCap <= 0 {
+			maxCap = 4 * 1024 * 1024 // default 4MB cap
+		}
+		if len(words) <= 1 {
+			done := make(chan bool, 1)
+			go func() {
+				done <- PDFContainsAllWordsNoDistancePath(filePath, words)
+			}()
+			select {
+			case ok := <-done:
+				if ok {
+					return true, true
+				}
+				// Fallback: capped raw-byte clean presence check
+				f, err := os.Open(filePath)
+				if err != nil {
+					return false, false
+				}
+				defer f.Close()
+				data, _ := io.ReadAll(io.LimitReader(f, maxCap))
+				clean := CleanContent(string(data))
+				// Use plural-aware presence via CheckTextContainsAllWords with large window
+				if CheckTextContainsAllWords(clean, words, 5000) {
+					return true, true
+				}
+				return false, false
+			case <-time.After(3 * time.Second):
+				// Timeout: treat as inconclusive and use fallback
+				f, err := os.Open(filePath)
+				if err != nil {
+					return false, false
+				}
+				defer f.Close()
+				data, _ := io.ReadAll(io.LimitReader(f, maxCap))
+				clean := CleanContent(string(data))
+				if CheckTextContainsAllWords(clean, words, 5000) {
+					return true, true
+				}
+				return false, false
+			}
+		} else {
+			// Distance-window scanner with caps; if not conclusively positive, fallback to capped raw-byte clean + distance
+			if PDFHasAllWordsWithinDistanceNoExtractPath(filePath, words, 5000) {
+				return true, true
+			}
+			f, err := os.Open(filePath)
+			if err != nil {
+				return false, false
+			}
+			defer f.Close()
+			data, _ := io.ReadAll(io.LimitReader(f, maxCap))
+			clean := CleanContent(string(data))
+			if CheckTextContainsAllWords(clean, words, 5000) {
+				return true, true
+			}
+			return false, false
+		}
 	default:
 		// For other types, leave decision to the main path.
 		return false, false

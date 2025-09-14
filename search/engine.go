@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -71,6 +73,16 @@ type SearchEngine struct {
 	HeavyConcurrency  int
 	FilterWorkers     int
 	FileTimeoutBinary time.Duration
+
+	// Metrics (atomic)
+	emlPrefilterCount    int64
+	emlPrefilterDurNanos int64
+	emlExtractCount      int64
+	emlExtractDurNanos   int64
+	msgPrefilterCount    int64
+	msgPrefilterDurNanos int64
+	msgExtractCount      int64
+	msgExtractDurNanos   int64
 
 	// Optional progress callback (nil if unused)
 	OnProgress ProgressFunc
@@ -157,37 +169,35 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 		}
 	}
 
+	// Results and synchronization
 	var matchingFiles []string
-	processed := 0
+	var mu sync.Mutex
+
+	// Progress (atomic across workers)
+	var processed int64
+
+	// Concurrency manager for heavy extraction gating
 	cm := NewConcurrencyManager(se.HeavyConcurrency)
 
-	for _, filePath := range candidateFiles {
-		processed++
-		// Emit per-file progress (filtered phase)
-		if se.OnProgress != nil {
-			se.OnProgress("processing", processed, total, filePath)
-		}
+	// Worker pool for Stage 2 text filtering
+	workers := se.FilterWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan string, workers*4)
+	var wg sync.WaitGroup
 
-		// Show progress every 500 files
-		if processed%500 == 0 && !se.Silent {
-			elapsed := time.Since(startTime).Seconds()
-			percent := float64(processed) * 100.0 / float64(len(candidateFiles))
-			fmt.Printf("Progress: %d/%d files (%.1f%%) - %.0fs elapsed\n",
-				processed, len(candidateFiles), percent, elapsed)
-		}
-
+	handleOne := func(filePath string) bool {
 		// Check for excluded extensions
 		ext := filepath.Ext(filePath)
-		excludeByExt := false
-		excludeByExt = slices.Contains(extExcludes, ext)
-		if excludeByExt {
-			continue
+		if slices.Contains(extExcludes, ext) {
+			return false
 		}
 
 		// Fast prefilter for text files: require presence of the second word before heavy checks
 		if len(se.SearchWords) > 1 && !IsBinaryFormat(filePath) {
 			if !StreamContainsWord(filePath, se.SearchWords[1]) {
-				continue
+				return false
 			}
 			// Rarest-terms (heuristic) prefilter for 3+ terms: pick two longest terms as proxies for rarity
 			if len(se.SearchWords) >= 3 {
@@ -196,7 +206,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
 				rare := terms[:2]
 				if !StreamContainsAllWords(filePath, rare) {
-					continue
+					return false
 				}
 			}
 		}
@@ -206,58 +216,88 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 		if len(se.SearchWords) > 1 {
 			if IsBinaryFormat(filePath) {
 				ext := filepath.Ext(filePath)
-				// Bounded streaming prefilter for supported binary types (EML/MSG/MBOX/RTF).
-				// Use a smaller cap for email formats to reduce latency, and skip heavy extraction unless prefilter passes.
+
+				// Bounded streaming prefilter for supported binary types.
+				// EML/MSG use a smaller cap; PDFs and others use a conservative default.
 				cap := int64(1024 * 1024)
 				if strings.EqualFold(ext, ".eml") || strings.EqualFold(ext, ".msg") {
 					cap = int64(256 * 1024)
 				}
-				if ok, decided := BinaryStreamingPrefilterDecided(filePath, se.SearchWords, cap); decided && !ok {
-					continue
+				startPF := time.Now()
+				found, decided := BinaryStreamingPrefilterDecided(filePath, se.SearchWords, cap)
+				durPF := time.Since(startPF)
+				switch strings.ToLower(ext) {
+				case ".eml":
+					atomic.AddInt64(&se.emlPrefilterCount, 1)
+					atomic.AddInt64(&se.emlPrefilterDurNanos, durPF.Nanoseconds())
+				case ".msg":
+					atomic.AddInt64(&se.msgPrefilterCount, 1)
+					atomic.AddInt64(&se.msgPrefilterDurNanos, durPF.Nanoseconds())
 				}
-				// Skip expensive extraction unless the prefilter conclusively passes
-				if ok := func() bool {
-					found, decided := BinaryStreamingPrefilterDecided(filePath, se.SearchWords, cap)
-					return decided && found
-				}(); !ok {
-					continue
+
+				// Decided negative => safe skip
+				if decided && !found {
+					return false
 				}
-				// For binary files, extract text first
-				content, _, err := GetFileContent(filePath)
-				if err != nil {
-					fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
-					continue
-				}
-				if extractor, exists := se.Registry.GetExtractor(ext); exists {
-					var extractedText string
-					var extErr error
-					err := cm.ExecuteWithTimeout(func() {
-						extractedText, extErr = extractor.ExtractText([]byte(content))
-					}, se.FileTimeoutBinary)
-					if err != nil || extErr != nil {
-						if !se.Silent {
-							if extErr != nil {
-								fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, extErr)
-							} else {
-								fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
-							}
-						}
-						continue
-					}
-					hasAllWords = CheckTextContainsAllWords(CleanContent(extractedText), se.SearchWords, se.Distance)
+				// Decided positive:
+				// - For PDFs (distance-window prefilter) or single-word queries, we can accept without extraction.
+				// - For other multi-word binaries, verify distance with extraction.
+				if decided && found && (strings.EqualFold(ext, ".pdf")) {
+					hasAllWords = true
 				} else {
-					if !se.Silent {
-						fmt.Printf("Warning: No extractor for %s\n", ext)
+					// Extract and verify distance for multi-word binaries
+					if extractor, exists := se.Registry.GetExtractor(ext); exists {
+						content, _, err := GetFileContent(filePath)
+						if err != nil {
+							if !se.Silent {
+								fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
+							}
+							return false
+						}
+						var extractedText string
+						var extErr error
+						startXT := time.Now()
+						cm.Acquire()
+						err = cm.ExecuteWithTimeout(func() {
+							extractedText, extErr = extractor.ExtractText([]byte(content))
+						}, se.FileTimeoutBinary)
+						cm.Release()
+						durXT := time.Since(startXT)
+						switch strings.ToLower(ext) {
+						case ".eml":
+							atomic.AddInt64(&se.emlExtractCount, 1)
+							atomic.AddInt64(&se.emlExtractDurNanos, durXT.Nanoseconds())
+						case ".msg":
+							atomic.AddInt64(&se.msgExtractCount, 1)
+							atomic.AddInt64(&se.msgExtractDurNanos, durXT.Nanoseconds())
+						}
+						if err != nil || extErr != nil {
+							if !se.Silent {
+								if extErr != nil {
+									// underlying extractor error
+									fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, extErr)
+								} else {
+									fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
+								}
+							}
+							return false
+						}
+						hasAllWords = CheckTextContainsAllWords(CleanContent(extractedText), se.SearchWords, se.Distance)
+					} else {
+						if !se.Silent {
+							fmt.Printf("Warning: No extractor for %s\n", ext)
+						}
+						return false
 					}
-					continue
 				}
 			} else {
+				// Text file: stream+distance
 				ok, err := CheckFileContainsAllWords(filePath, se.SearchWords, se.Distance, se.Silent)
 				if err != nil {
 					if !se.Silent {
 						fmt.Printf("Warning: Error checking file %s: %v\n", filePath, err)
 					}
-					continue
+					return false
 				}
 				hasAllWords = ok
 			}
@@ -265,36 +305,64 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 			// Single-word presence check
 			word := se.SearchWords[0]
 			if IsBinaryFormat(filePath) {
-				rawContent, _, err := GetFileContent(filePath)
-				if err != nil {
-					if !se.Silent {
-						fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
-					}
-					continue
-				}
 				ext := filepath.Ext(filePath)
-				if extractor, exists := se.Registry.GetExtractor(ext); exists {
-					var extractedText string
-					var extErr error
-					err := cm.ExecuteWithTimeout(func() {
-						extractedText, extErr = extractor.ExtractText([]byte(rawContent))
-					}, se.FileTimeoutBinary)
-					if err != nil || extErr != nil {
-						if !se.Silent {
-							if extErr != nil {
-								fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, extErr)
-							} else {
-								fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
-							}
-						}
-						continue
-					}
-					hasAllWords = CheckTextContainsAllWords(CleanContent(extractedText), []string{word}, se.Distance)
+				// Run bounded prefilter for binary types (honor PDFs to avoid unnecessary extraction)
+				cap := int64(1024 * 1024)
+				if strings.EqualFold(ext, ".eml") || strings.EqualFold(ext, ".msg") {
+					cap = int64(256 * 1024)
+				}
+				foundPF, decidedPF := BinaryStreamingPrefilterDecided(filePath, []string{word}, cap)
+				// Decided negative => safe skip
+				if decidedPF && !foundPF {
+					return false
+				}
+				// If PDF and prefilter was conclusively positive, accept without extraction here
+				if decidedPF && foundPF && strings.EqualFold(ext, ".pdf") {
+					hasAllWords = true
 				} else {
-					if !se.Silent {
-						fmt.Printf("Warning: No extractor for %s\n", ext)
+					// Bounded extraction fallback under semaphore + timeout
+					rawContent, _, err := GetFileContent(filePath)
+					if err != nil {
+						if !se.Silent {
+							fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
+						}
+						return false
 					}
-					continue
+					if extractor, exists := se.Registry.GetExtractor(ext); exists {
+						var extractedText string
+						var extErr error
+						startXT := time.Now()
+						cm.Acquire()
+						err = cm.ExecuteWithTimeout(func() {
+							extractedText, extErr = extractor.ExtractText([]byte(rawContent))
+						}, se.FileTimeoutBinary)
+						cm.Release()
+						durXT := time.Since(startXT)
+						switch strings.ToLower(ext) {
+						case ".eml":
+							atomic.AddInt64(&se.emlExtractCount, 1)
+							atomic.AddInt64(&se.emlExtractDurNanos, durXT.Nanoseconds())
+						case ".msg":
+							atomic.AddInt64(&se.msgExtractCount, 1)
+							atomic.AddInt64(&se.msgExtractDurNanos, durXT.Nanoseconds())
+						}
+						if err != nil || extErr != nil {
+							if !se.Silent {
+								if extErr != nil {
+									fmt.Printf("Warning: Error extracting text from %s: %v\n", filePath, extErr)
+								} else {
+									fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
+								}
+							}
+							return false
+						}
+						hasAllWords = CheckTextContainsAllWords(CleanContent(extractedText), []string{word}, se.Distance)
+					} else {
+						if !se.Silent {
+							fmt.Printf("Warning: No extractor for %s\n", ext)
+						}
+						return false
+					}
 				}
 			} else {
 				ok, err := CheckFileContainsAllWords(filePath, []string{word}, se.Distance, se.Silent)
@@ -302,34 +370,36 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 					if !se.Silent {
 						fmt.Printf("Warning: Error checking file %s: %v\n", filePath, err)
 					}
-					continue
+					return false
 				}
 				hasAllWords = ok
 			}
 		}
 
 		if !hasAllWords {
-			continue
+			return false
 		}
 
 		// Check if file contains any exclude words
 		hasExcludeWords := false
 		if IsBinaryFormat(filePath) {
-			// For binary files, extract text
+			// For binary files, extract text (gated and timed)
 			rawContent, _, err := GetFileContent(filePath)
 			if err != nil {
 				if !se.Silent {
 					fmt.Printf("Warning: Error reading file %s: %v\n", filePath, err)
 				}
-				continue
+				return false
 			}
 			ext := filepath.Ext(filePath)
 			if extractor, exists := se.Registry.GetExtractor(ext); exists {
 				var out string
 				var extErr error
+				cm.Acquire()
 				err := cm.ExecuteWithTimeout(func() {
 					out, extErr = extractor.ExtractText([]byte(rawContent))
 				}, se.FileTimeoutBinary)
+				cm.Release()
 				if err != nil || extErr != nil {
 					if !se.Silent {
 						if extErr != nil {
@@ -338,7 +408,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 							fmt.Printf("Warning: Extraction timeout for %s\n", filePath)
 						}
 					}
-					continue
+					return false
 				}
 				// Compute exclude words from extracted text (cleaned)
 				hasExcludeWords = CheckTextContainsExcludeWords(CleanContent(out), wordExcludes)
@@ -346,7 +416,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				if !se.Silent {
 					fmt.Printf("Warning: No extractor for %s\n", ext)
 				}
-				continue
+				return false
 			}
 		} else {
 			ok2, err := CheckFileContainsExcludeWords(filePath, wordExcludes)
@@ -354,17 +424,56 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				if !se.Silent {
 					fmt.Printf("Warning: Error checking exclude words in %s: %v\n", filePath, err)
 				}
-				continue
+				return false
 			}
 			hasExcludeWords = ok2
 		}
 
 		if hasExcludeWords {
-			continue
+			return false
 		}
 
-		matchingFiles = append(matchingFiles, filePath)
+		return true
 	}
+
+	// Start workers
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for filePath := range jobs {
+				matched := handleOne(filePath)
+
+				// Append results if matched
+				if matched {
+					mu.Lock()
+					matchingFiles = append(matchingFiles, filePath)
+					mu.Unlock()
+				}
+
+				// Atomic progress update
+				cur := atomic.AddInt64(&processed, 1)
+				if se.OnProgress != nil {
+					se.OnProgress("processing", int(cur), total, filePath)
+				}
+				// Optional periodic console progress
+				if cur%500 == 0 && !se.Silent {
+					elapsed := time.Since(startTime).Seconds()
+					percent := float64(cur) * 100.0 / float64(len(candidateFiles))
+					fmt.Printf("Progress: %d/%d files (%.1f%%) - %.0fs elapsed\n",
+						cur, len(candidateFiles), percent, elapsed)
+				}
+			}
+		}()
+	}
+
+	// Enqueue jobs
+	for _, p := range candidateFiles {
+		jobs <- p
+	}
+	close(jobs)
+	wg.Wait()
+
 	return matchingFiles, nil
 }
 
@@ -507,6 +616,27 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 	totalTime := time.Since(startTime)
 	if !se.Silent {
 		fmt.Printf("Search completed in %.0f seconds!\n", totalTime.Seconds())
+
+		// Latency metrics summary (averages in ms)
+		if se.emlPrefilterCount > 0 || se.emlExtractCount > 0 || se.msgPrefilterCount > 0 || se.msgExtractCount > 0 {
+			fmt.Println("Latency (avg ms):")
+			if se.emlPrefilterCount > 0 {
+				avg := float64(se.emlPrefilterDurNanos) / 1e6 / float64(se.emlPrefilterCount)
+				fmt.Printf("  EML prefilter: %d • %.1fms\n", se.emlPrefilterCount, avg)
+			}
+			if se.emlExtractCount > 0 {
+				avg := float64(se.emlExtractDurNanos) / 1e6 / float64(se.emlExtractCount)
+				fmt.Printf("  EML extract:   %d • %.1fms\n", se.emlExtractCount, avg)
+			}
+			if se.msgPrefilterCount > 0 {
+				avg := float64(se.msgPrefilterDurNanos) / 1e6 / float64(se.msgPrefilterCount)
+				fmt.Printf("  MSG prefilter: %d • %.1fms\n", se.msgPrefilterCount, avg)
+			}
+			if se.msgExtractCount > 0 {
+				avg := float64(se.msgExtractDurNanos) / 1e6 / float64(se.msgExtractCount)
+				fmt.Printf("  MSG extract:   %d • %.1fms\n", se.msgExtractCount, avg)
+			}
+		}
 	}
 
 	return results, nil
