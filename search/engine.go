@@ -61,6 +61,33 @@ func (cm *ConcurrencyManager) ExecuteWithTimeout(fn func(), timeout time.Duratio
 // heavySem is a single-slot semaphore to bound concurrent binary extractions
 var heavySem = make(chan struct{}, 1)
 
+// PDF governor: pacing + budget, synchronous and safe.
+// Returns true if this PDF is allowed to proceed now; false when skipped due to budget.
+func (se *SearchEngine) pdfGovernorAllow() bool {
+	// Budget gating
+	if atomic.LoadInt64(&se.pdfBudget) > 0 {
+		pro := atomic.LoadInt64(&se.pdfProcessed)
+		if pro >= atomic.LoadInt64(&se.pdfBudget) {
+			atomic.AddInt64(&se.pdfSkippedBudget, 1)
+			return false
+		}
+	}
+
+	// Pacing (min interval between PDFs)
+	if se.pdfMinInterval > 0 {
+		last := time.Unix(0, atomic.LoadInt64(&se.pdfLastAt))
+		now := time.Now()
+		if delta := now.Sub(last); delta < se.pdfMinInterval && !last.IsZero() {
+			time.Sleep(se.pdfMinInterval - delta)
+		}
+		atomic.StoreInt64(&se.pdfLastAt, time.Now().UnixNano())
+	}
+
+	// Count this PDF as processed
+	atomic.AddInt64(&se.pdfProcessed, 1)
+	return true
+}
+
 // SearchEngine handles the multi-word search logic
 type SearchEngine struct {
 	SearchWords       []string
@@ -73,6 +100,13 @@ type SearchEngine struct {
 	HeavyConcurrency  int
 	FilterWorkers     int
 	FileTimeoutBinary time.Duration
+
+	// PDF governor (defaults: pacing on, no budget)
+	pdfMinInterval   time.Duration
+	pdfBudget        int64 // 0 = unlimited
+	pdfProcessed     int64 // atomic counter
+	pdfSkippedBudget int64 // atomic counter
+	pdfLastAt        int64 // UnixNano (atomic)
 
 	// Metrics (atomic)
 	emlPrefilterCount    int64
@@ -101,6 +135,11 @@ func NewSearchEngine(searchWords, excludeWords []string, fileTypes []string, inc
 		HeavyConcurrency:  heavyConcurrency,
 		FilterWorkers:     2,
 		FileTimeoutBinary: time.Duration(fileTimeoutBinary) * time.Millisecond,
+
+		// PDF governor defaults (safe)
+		pdfMinInterval: 250 * time.Millisecond,
+		pdfBudget:      0, // unlimited by default
+		pdfLastAt:      0, // no pacing history yet
 	}
 }
 
@@ -216,6 +255,13 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 		if len(se.SearchWords) > 1 {
 			if IsBinaryFormat(filePath) {
 				ext := filepath.Ext(filePath)
+
+				// PDF governor: pacing and budget (only affects PDFs)
+				if strings.EqualFold(ext, ".pdf") {
+					if !se.pdfGovernorAllow() {
+						return false
+					}
+				}
 
 				// Bounded streaming prefilter for supported binary types.
 				// EML/MSG use a smaller cap; PDFs and others use a conservative default.
@@ -637,6 +683,12 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 				fmt.Printf("  MSG extract:   %d • %.1fms\n", se.msgExtractCount, avg)
 			}
 		}
+		// PDF governor summary
+		if atomic.LoadInt64(&se.pdfProcessed) > 0 || atomic.LoadInt64(&se.pdfSkippedBudget) > 0 {
+			fmt.Printf("  PDF scanned: %d • skipped (budget): %d\n",
+				atomic.LoadInt64(&se.pdfProcessed),
+				atomic.LoadInt64(&se.pdfSkippedBudget))
+		}
 	}
 
 	return results, nil
@@ -672,4 +724,9 @@ func formatNumber(n int) string {
 	}
 
 	return result.String()
+}
+
+// GetPDFStats returns PDF processing counters: processed and skipped due to budget.
+func (se *SearchEngine) GetPDFStats() (processed int64, skippedBudget int64) {
+	return atomic.LoadInt64(&se.pdfProcessed), atomic.LoadInt64(&se.pdfSkippedBudget)
 }

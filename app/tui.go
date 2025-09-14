@@ -25,10 +25,12 @@ var progressMu sync.Mutex
 // progressMsg updates the top progress line while loading.
 // Format in View: "⏳ {Stage} [num/total]: filename"
 type progressMsg struct {
-	Stage string
-	Count int
-	Total int
-	Path  string
+	Stage      string
+	Count      int
+	Total      int
+	Path       string
+	PdfScanned int64
+	PdfSkipped int64
 }
 
 // Styles (exported styling used by CLI usage/version output too)
@@ -93,6 +95,8 @@ type model struct {
 	distance          int
 	heavyConcurrency  int
 	fileTimeoutBinary int
+	pdfScanned        int64
+	pdfSkipped        int64
 	filterWorkers     int
 
 	// UI state
@@ -200,22 +204,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.results = msg.results
 		m.confirmSelected = "yes"
 		m.searchTime = msg.searchTime
+		m.pdfScanned = msg.pdfScanned
+		m.pdfSkipped = msg.pdfSkipped
 		m.totalPages = len(m.results)
 		if m.totalPages == 0 {
 			m.totalPages = 1
 		}
 		m.loading = false
-		return m, m.memUsageTick()
+		return m, nil
 
 	case memUsageMsg:
 		m.memUsageText = msg.Text
-		return m, m.memUsageTick()
+		if m.loading {
+			return m, m.memUsageTick()
+		}
+		return m, nil
 
 	case progressMsg:
 		// Update the top progress line (only shown while loading)
 		p := msg.Path
 		// keep relative path
 		m.totalFiles = msg.Total
+		m.pdfScanned = msg.PdfScanned
+		m.pdfSkipped = msg.PdfSkipped
 		m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(msg.Stage), msg.Count, msg.Total, p)
 		// Keep polling progress while loading
 		return m, pollProgress()
@@ -231,6 +242,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p := lp.Path
 			// keep relative path
 			m.totalFiles = lp.Total
+			m.pdfScanned = lp.PdfScanned
+			m.pdfSkipped = lp.PdfSkipped
 			m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(lp.Stage), lp.Count, lp.Total, p)
 		}
 		return m, pollProgress()
@@ -267,25 +280,32 @@ func (m model) View() string {
 	headerLines = append(headerLines, logo)
 	headerLines = append(headerLines, "")
 
-	// Search terms (classic)
+	// Search terms (comma-separated; truncate with {...} if many)
 	{
-		var terms []string
-		for _, w := range m.searchWords {
-			terms = append(terms, fmt.Sprintf("\"%s\"", w))
+		var parts []string
+		for i, w := range m.searchWords {
+			if i < 4 {
+				parts = append(parts, w)
+			}
 		}
-		headerLines = append(headerLines, subHeaderStyle.Render("🔍 Searching: "+strings.Join(terms, " ")))
+		if len(m.searchWords) > 4 {
+			parts = append(parts, "{...}")
+		}
+		searchLine := "🔍 Searching: " + strings.Join(parts, ", ")
+		headerLines = append(headerLines, subHeaderStyle.Render(searchLine))
 	}
 
-	// Target description
+	// Target description (aligned)
 	targetDesc := config.GetFileTypeDescription(m.includeCode)
-	targetPrefix := "📁 Target: "
+	targetPrefix := "📁 Target:    "
 	targetStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
 	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc, width-4)))
 
-	// Engine line with cores + RAM/CPU live
-	engine := fmt.Sprintf("⚙️ Engine: Workers %d%s", m.heavyConcurrency, m.memUsageText)
+	// Engine line with cores + RAM/CPU live (aligned)
+	engineContent := fmt.Sprintf("Workers %d%s", m.heavyConcurrency, m.memUsageText)
+	enginePrefix := "⚙️ Engine:    "
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7"))
-	headerLines = append(headerLines, engineStyled.Render(engine))
+	headerLines = append(headerLines, engineStyled.Render(wrapTextWithIndent(enginePrefix, engineContent, width-4)))
 
 	// Elapsed search time (always show combined line; freeze after completion)
 	var minutes float64
@@ -294,7 +314,7 @@ func (m model) View() string {
 	} else {
 		minutes = m.searchTime.Minutes()
 	}
-	elapsed := fmt.Sprintf("⏱️ Searched: %.2f minutes • Matched: %d of %d files", minutes, len(m.results), m.totalFiles)
+	elapsed := fmt.Sprintf("⏱️ Searched:  %.2f minutes • Matched: %d of %d files 📄 PDF: Scanned %d • Skipped %d", minutes, len(m.results), m.totalFiles, m.pdfScanned, m.pdfSkipped)
 	elapsedStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#e0af68"))
 	headerLines = append(headerLines, elapsedStyled.Render(elapsed))
 
@@ -316,10 +336,10 @@ func (m model) View() string {
 	if m.loading {
 		var txt string
 		if m.progressText != "" {
-			// Expect m.progressText formatted as "[num/total]: filename"
-			txt = fmt.Sprintf("⏳ %s", m.progressText)
+			// Show aligned progress with wrapping
+			txt = wrapTextWithIndent("⏳ Progress:  ", m.progressText, width-4)
 		} else {
-			txt = "⏳ Processing"
+			txt = "⏳ Progress:  "
 		}
 		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
 		parts = append(parts, progressStyled.Render(txt))
@@ -431,6 +451,9 @@ func (m model) View() string {
 		parts = append(parts, "")
 	}
 
+	// (Removed separate PDF stats line to save space; included in Searched line)
+	parts = append(parts, "")
+
 	// Footer line
 	quitInstruction := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7aa2f7")).
@@ -461,13 +484,29 @@ func (m model) runSearch() tea.Cmd {
 	}
 	// Stream progress from the engine to the TUI header
 	se.OnProgress = func(stage string, processed, total int, path string) {
+		ps, sk := se.GetPDFStats()
+
 		progressMu.Lock()
-		latestProgress = progressMsg{Stage: stage, Count: processed, Total: total, Path: path}
+		latestProgress = progressMsg{
+			Stage:      stage,
+			Count:      processed,
+			Total:      total,
+			Path:       path,
+			PdfScanned: ps,
+			PdfSkipped: sk,
+		}
 		haveLatestProgress = true
 		progressMu.Unlock()
 
 		// also push to the progress channel; drop oldest if full to keep latest flowing
-		msg := progressMsg{Stage: stage, Count: processed, Total: total, Path: path}
+		msg := progressMsg{
+			Stage:      stage,
+			Count:      processed,
+			Total:      total,
+			Path:       path,
+			PdfScanned: ps,
+			PdfSkipped: sk,
+		}
 		select {
 		case progressChan <- msg:
 		default:
@@ -490,9 +529,12 @@ func (m model) runSearch() tea.Cmd {
 		func() tea.Msg {
 			start := time.Now()
 			results, _ := se.Execute()
+			ps, sk := se.GetPDFStats()
 			return searchResultMsg{
 				results:    results,
 				searchTime: time.Since(start),
+				pdfScanned: ps,
+				pdfSkipped: sk,
 			}
 		},
 	)
@@ -627,6 +669,8 @@ func min(a, b int) int {
 type searchResultMsg struct {
 	results    []search.SearchResult
 	searchTime time.Duration
+	pdfScanned int64
+	pdfSkipped int64
 }
 
 type memUsageMsg struct {

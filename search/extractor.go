@@ -26,6 +26,106 @@ type Extractor interface {
 	ExtractText(data []byte) (string, error)
 }
 
+// PDFPresenceOnlyPathCapped performs a synchronous, bounded presence-only scan on a PDF.
+// It returns (found, decided):
+//   - found=true, decided=true   => conclusively found all words
+//   - found=false, decided=true  => conclusively absent within bounds
+//   - found=false, decided=false => cap/time bound reached; do not skip based on this
+func PDFPresenceOnlyPathCapped(path string, words []string, maxPages int, maxDur time.Duration) (bool, bool) {
+	if len(words) == 0 {
+		return true, true
+	}
+	defer func() { _ = recover() }()
+
+	f, err := os.Open(path)
+	if err != nil {
+		// Treat file open failure as decided(false) for safety of the scan itself
+		return false, true
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return false, true
+	}
+
+	reader, err := pdf.NewReader(f, stat.Size())
+	if err != nil {
+		// Reader construction failed (malformed/corrupt PDF) — undecided to avoid false negatives
+		return false, false
+	}
+
+	// Safely obtain number of pages
+	pages := 0
+	func() {
+		defer func() { _ = recover() }()
+		pages = reader.NumPage()
+	}()
+	if pages <= 0 {
+		return false, false
+	}
+
+	// Precompile plural-aware whole-word, case-insensitive regexes
+	rs := make([]*regexp.Regexp, len(words))
+	found := make([]bool, len(words))
+	remaining := len(words)
+	for i, w := range words {
+		pattern := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
+		rs[i] = regexp.MustCompile(pattern)
+	}
+
+	// Apply caps
+	if maxPages <= 0 || maxPages > pages {
+		maxPages = pages
+	}
+	start := time.Now()
+
+	for i := 1; i <= maxPages; i++ {
+		// Time cap first to avoid deep loops
+		if time.Since(start) > maxDur {
+			return false, false
+		}
+
+		// Extract page text defensively
+		var pageText string
+		func() {
+			defer func() { _ = recover() }()
+			page := reader.Page(i)
+			if page.V.IsNull() {
+				return
+			}
+			content := page.Content()
+			var b strings.Builder
+			for _, item := range content.Text {
+				b.WriteString(item.S)
+				b.WriteByte(' ')
+			}
+			pageText = b.String()
+		}()
+
+		if pageText == "" {
+			continue
+		}
+
+		for wi, re := range rs {
+			if !found[wi] && re.MatchString(pageText) {
+				found[wi] = true
+				remaining--
+				if remaining == 0 {
+					return true, true
+				}
+			}
+		}
+	}
+
+	// If we completed the bounded page scan within time, it's a decisive negative
+	if time.Since(start) <= maxDur && maxPages >= pages {
+		return false, true
+	}
+	// Otherwise, we hit a bound; treat as undecided
+	return false, false
+}
+
 // ExtractorRegistry holds extractors for different file types
 type ExtractorRegistry struct {
 	extractors map[string]Extractor

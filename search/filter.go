@@ -915,67 +915,25 @@ func BinaryStreamingPrefilterDecided(filePath string, words []string, capBytes i
 		return false, false
 
 	case ".pdf":
-		// Safe PDF prefilters with strict caps/timeouts + raw-byte fallback.
-		// - For 1 term: presence-only page scan with a hard timeout; if inconclusive/negative, fall back to capped raw-byte clean + presence check.
-		// - For 2+ terms: distance-window page scan; if inconclusive/negative, fall back to capped raw-byte clean + distance check.
-		// Undecided must never cause skipping.
-		// Determine cap budget (bytes) for raw-byte fallback
-		maxCap := capBytes
-		if maxCap <= 0 {
-			maxCap = 4 * 1024 * 1024 // default 4MB cap
-		}
+		// Capped synchronous PDF presence-only prefilter to avoid goroutines.
 		if len(words) <= 1 {
-			done := make(chan bool, 1)
-			go func() {
-				done <- PDFContainsAllWordsNoDistancePath(filePath, words)
-			}()
-			select {
-			case ok := <-done:
-				if ok {
-					return true, true
-				}
-				// Fallback: capped raw-byte clean presence check
-				f, err := os.Open(filePath)
-				if err != nil {
-					return false, false
-				}
-				defer f.Close()
-				data, _ := io.ReadAll(io.LimitReader(f, maxCap))
-				clean := CleanContent(string(data))
-				// Use plural-aware presence via CheckTextContainsAllWords with large window
-				if CheckTextContainsAllWords(clean, words, 5000) {
-					return true, true
-				}
-				return false, false
-			case <-time.After(3 * time.Second):
-				// Timeout: treat as inconclusive and use fallback
-				f, err := os.Open(filePath)
-				if err != nil {
-					return false, false
-				}
-				defer f.Close()
-				data, _ := io.ReadAll(io.LimitReader(f, maxCap))
-				clean := CleanContent(string(data))
-				if CheckTextContainsAllWords(clean, words, 5000) {
-					return true, true
-				}
-				return false, false
-			}
+			found, decided := PDFPresenceOnlyPathCapped(filePath, words, 250, 800*time.Millisecond)
+			return found, decided
 		} else {
-			// Distance-window scanner with caps; if not conclusively positive, fallback to capped raw-byte clean + distance
-			if PDFHasAllWordsWithinDistanceNoExtractPath(filePath, words, 5000) {
-				return true, true
+			present, decided := PDFPresenceOnlyPathCapped(filePath, words, 250, 800*time.Millisecond)
+			if decided && !present {
+				// Fast negative => decisively absent (skip without heavy work)
+				return false, true
 			}
-			f, err := os.Open(filePath)
-			if err != nil {
+			if decided && present {
+				// Present: run bounded distance-window scan
+				if PDFHasAllWordsWithinDistanceNoExtractPath(filePath, words, 5000) {
+					return true, true
+				}
+				// Distance-window not confirmed within bounds => undecided
 				return false, false
 			}
-			defer f.Close()
-			data, _ := io.ReadAll(io.LimitReader(f, maxCap))
-			clean := CleanContent(string(data))
-			if CheckTextContainsAllWords(clean, words, 5000) {
-				return true, true
-			}
+			// Prefilter undecided => undecided (do not skip)
 			return false, false
 		}
 	default:
