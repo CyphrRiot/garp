@@ -292,6 +292,25 @@ func (m model) View() string {
 			parts = append(parts, "{...}")
 		}
 		searchLine := "🔍 Searching: " + strings.Join(parts, ", ")
+		// Append excluded non-extension words in condensed form
+		var exWords []string
+		for _, w := range m.excludeWords {
+			if !strings.HasPrefix(w, ".") {
+				exWords = append(exWords, w)
+			}
+		}
+		if len(exWords) > 0 {
+			var shown []string
+			for i, x := range exWords {
+				if i < 4 {
+					shown = append(shown, x)
+				}
+			}
+			if len(exWords) > 4 {
+				shown = append(shown, "{...}")
+			}
+			searchLine += "  🚫 " + strings.Join(shown, ", ")
+		}
 		headerLines = append(headerLines, subHeaderStyle.Render(searchLine))
 	}
 
@@ -299,7 +318,27 @@ func (m model) View() string {
 	targetDesc := config.GetFileTypeDescription(m.includeCode)
 	targetPrefix := "📁 Target:    "
 	targetStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
-	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc, width-4)))
+	// Append extension excludes (e.g., .pdf) to keep header truthful, condensed with emoji
+	var extEx []string
+	for _, w := range m.excludeWords {
+		if strings.HasPrefix(w, ".") {
+			extEx = append(extEx, w)
+		}
+	}
+	suffix := ""
+	if len(extEx) > 0 {
+		var shown []string
+		for i, x := range extEx {
+			if i < 4 {
+				shown = append(shown, strings.TrimPrefix(x, "."))
+			}
+		}
+		if len(extEx) > 4 {
+			shown = append(shown, "{...}")
+		}
+		suffix = "  🚫 " + strings.Join(shown, ", ")
+	}
+	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc+suffix, width-4)))
 
 	// Engine line with cores + RAM/CPU live (aligned)
 	engineContent := fmt.Sprintf("Workers %d%s", m.heavyConcurrency, m.memUsageText)
@@ -344,8 +383,10 @@ func (m model) View() string {
 		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
 		parts = append(parts, progressStyled.Render(txt))
 	} else {
-		// Reserve the progress row to keep the box fixed when not loading
-		parts = append(parts, "")
+		// Show final progress summary line to keep the box fixed after completion
+		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
+		final := wrapTextWithIndent("⏳ Progress:  ", fmt.Sprintf("Processing [%d/%d]: All files scanned.", m.totalFiles, m.totalFiles), width-4)
+		parts = append(parts, progressStyled.Render(final))
 	}
 
 	// Main content box

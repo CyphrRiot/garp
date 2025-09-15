@@ -436,8 +436,28 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 			time.Sleep(2 * time.Millisecond)
 		}
 
-		// Heavy files are added directly; skip worker scan
+		// Heavy files: conservative prefilter for non-PDF; include unless decisively absent
 		if heavy[ext] {
+			if ext == ".pdf" {
+				// PDFs are handled later under strict guardrails; include as candidate
+				mu.Lock()
+				matches = append(matches, path)
+				mu.Unlock()
+				return nil
+			}
+			// For non-PDF heavy types, run a small capped streaming prefilter for the first term.
+			// Only skip when conclusively absent; undecided or found => include.
+			var capBytes int64
+			switch ext {
+			case ".eml", ".msg", ".mbox":
+				capBytes = 256 * 1024
+			default:
+				capBytes = 2 * 1024 * 1024
+			}
+			found, decided := BinaryStreamingPrefilterDecided(path, []string{word}, capBytes)
+			if decided && !found {
+				return nil // safe to skip
+			}
 			mu.Lock()
 			matches = append(matches, path)
 			mu.Unlock()

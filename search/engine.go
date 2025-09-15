@@ -233,20 +233,17 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 			return false
 		}
 
-		// Fast prefilter for text files: require presence of the second word before heavy checks
-		if len(se.SearchWords) > 1 && !IsBinaryFormat(filePath) {
-			if !StreamContainsWord(filePath, se.SearchWords[1]) {
-				return false
-			}
-			// Rarest-terms (heuristic) prefilter for 3+ terms: pick two longest terms as proxies for rarity
+		// Consolidated prefilter for text files: single streaming pass on rarest-two or both terms
+		if !IsBinaryFormat(filePath) && len(se.SearchWords) >= 2 {
+			termsToCheck := se.SearchWords
 			if len(se.SearchWords) >= 3 {
 				terms := make([]string, len(se.SearchWords))
 				copy(terms, se.SearchWords)
 				sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
-				rare := terms[:2]
-				if !StreamContainsAllWords(filePath, rare) {
-					return false
-				}
+				termsToCheck = terms[:2]
+			}
+			if !StreamContainsAllWords(filePath, termsToCheck) {
+				return false
 			}
 		}
 
@@ -428,7 +425,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 
 		// Check if file contains any exclude words
 		hasExcludeWords := false
-		if IsBinaryFormat(filePath) {
+		if len(wordExcludes) > 0 && IsBinaryFormat(filePath) {
 			// For binary files, extract text (gated and timed)
 			rawContent, _, err := GetFileContent(filePath)
 			if err != nil {
@@ -464,7 +461,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				}
 				return false
 			}
-		} else {
+		} else if len(wordExcludes) > 0 {
 			ok2, err := CheckFileContainsExcludeWords(filePath, wordExcludes)
 			if err != nil {
 				if !se.Silent {
