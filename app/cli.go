@@ -43,6 +43,7 @@ func parseArguments(args []string) *Arguments {
 	expectHeavy := false
 	expectTimeout := false
 	expectWorkers := false
+	heavyProvided := false
 
 	for _, a := range args {
 		if expectDistance {
@@ -55,6 +56,7 @@ func parseArguments(args []string) *Arguments {
 		if expectHeavy {
 			if n, err := strconv.Atoi(a); err == nil && n > 0 {
 				result.HeavyConcurrency = n
+				heavyProvided = true
 			}
 			expectHeavy = false
 			continue
@@ -101,6 +103,57 @@ func parseArguments(args []string) *Arguments {
 		}
 	}
 
+	// Auto-derive HeavyConcurrency when not explicitly provided: base on workers and available RAM
+	if !heavyProvided {
+		// default derived heavy = max(1, workers/2)
+		workers := result.FilterWorkers
+		derived := workers / 2
+		if derived < 1 {
+			derived = 1
+		}
+		// Derive an upper bound from system RAM (~ one heavy slot per 4 GiB), clamp to [1,8]
+		memAvailKB := int64(0)
+		if b, err := os.ReadFile("/proc/meminfo"); err == nil {
+			lines := strings.Split(string(b), "\n")
+			// Prefer MemAvailable; fallback to MemFree if unavailable
+			for _, ln := range lines {
+				if strings.HasPrefix(ln, "MemAvailable:") {
+					fields := strings.Fields(ln)
+					if len(fields) >= 2 {
+						if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+							memAvailKB = kb
+						}
+					}
+					break
+				}
+			}
+			if memAvailKB == 0 {
+				for _, ln := range lines {
+					if strings.HasPrefix(ln, "MemFree:") {
+						fields := strings.Fields(ln)
+						if len(fields) >= 2 {
+							if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+								memAvailKB = kb
+							}
+						}
+						break
+					}
+				}
+			}
+		}
+		memAvailGB := memAvailKB / (1024 * 1024)
+		ramBound := int(memAvailGB / 4)
+		if ramBound < 1 {
+			ramBound = 1
+		}
+		if derived > ramBound {
+			derived = ramBound
+		}
+		if derived > 8 {
+			derived = 8
+		}
+		result.HeavyConcurrency = derived
+	}
 	return result
 }
 
@@ -128,7 +181,7 @@ func showUsage() {
 	fmt.Println(subHeaderStyle.Render("FLAGS"))
 	fmt.Println(infoStyle.Render("  --code                  Include code files in the search"))
 	fmt.Println(infoStyle.Render("  --distance N            Proximity window in characters (default 5000)"))
-	fmt.Println(infoStyle.Render("  --heavy-concurrency N   Concurrent heavy extractions (default 2)"))
+	fmt.Println(infoStyle.Render("  --heavy-concurrency N   Concurrent heavy extractions (auto if omitted)"))
 	fmt.Println(infoStyle.Render("  --workers N             Stage 2 text filter workers (default 2)"))
 	fmt.Println(infoStyle.Render("  --file-timeout-binary N Timeout in ms for binary extraction (default 1000)"))
 	fmt.Println(infoStyle.Render("  --not ...               Tokens after this are exclusions;"))

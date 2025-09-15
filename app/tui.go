@@ -346,7 +346,7 @@ func (m model) View() string {
 	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc+suffix, width-4)))
 
 	// Engine line with cores + RAM/CPU live (aligned)
-	engineContent := fmt.Sprintf("Workers %d%s", m.heavyConcurrency, m.memUsageText)
+	engineContent := fmt.Sprintf("Workers (filters) %d • Heavy (auto) %d%s", m.filterWorkers, m.heavyConcurrency, m.memUsageText)
 	enginePrefix := "⚙️ Engine:    "
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7"))
 	headerLines = append(headerLines, engineStyled.Render(wrapTextWithIndent(enginePrefix, engineContent, width-4)))
@@ -358,7 +358,7 @@ func (m model) View() string {
 	} else {
 		minutes = m.searchTime.Minutes()
 	}
-	elapsed := fmt.Sprintf("⏱️ Searched:  %.2f minutes • Matched: %d of %d files 📄 PDF: Scanned %d • Skipped %d • Truncated %d", minutes, len(m.results), m.totalFiles, m.pdfScanned, m.pdfSkipped, m.pdfTruncated)
+	elapsed := fmt.Sprintf("⏱️ Searched:  %.2f minutes • Matched: %d of %d files • PDFs Scanned %d • Skipped %d • Truncated %d", minutes, len(m.results), m.totalFiles, m.pdfScanned, m.pdfSkipped, m.pdfTruncated)
 	elapsedStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#8ab4f8"))
 	headerLines = append(headerLines, elapsedStyled.Render(elapsed))
 
