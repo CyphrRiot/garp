@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/emersion/go-mbox"
@@ -25,6 +26,13 @@ type Extractor interface {
 	// ExtractText takes raw file bytes and returns extracted plain text
 	ExtractText(data []byte) (string, error)
 }
+
+// pdfPagesTruncated counts the number of PDF pages truncated for safety.
+var pdfPagesTruncated int64
+
+// PDFPageTextCapBytes is the maximum number of bytes of text we consider per PDF page during scanning.
+// This cap is applied defensively to prevent pathological pages from causing excessive memory/time usage.
+const PDFPageTextCapBytes = 131072
 
 // PDFPresenceOnlyPathCapped performs a synchronous, bounded presence-only scan on a PDF.
 // It returns (found, decided):
@@ -79,6 +87,7 @@ func PDFPresenceOnlyPathCapped(path string, words []string, maxPages int, maxDur
 		maxPages = pages
 	}
 	start := time.Now()
+	truncatedEver := false
 
 	for i := 1; i <= maxPages; i++ {
 		// Time cap first to avoid deep loops
@@ -101,6 +110,11 @@ func PDFPresenceOnlyPathCapped(path string, words []string, maxPages int, maxDur
 				b.WriteByte(' ')
 			}
 			pageText = b.String()
+			if len(pageText) > PDFPageTextCapBytes {
+				truncatedEver = true
+				atomic.AddInt64(&pdfPagesTruncated, 1)
+				pageText = pageText[:PDFPageTextCapBytes]
+			}
 		}()
 
 		if pageText == "" {
@@ -120,6 +134,9 @@ func PDFPresenceOnlyPathCapped(path string, words []string, maxPages int, maxDur
 
 	// If we completed the bounded page scan within time, it's a decisive negative
 	if time.Since(start) <= maxDur && maxPages >= pages {
+		if truncatedEver {
+			return false, false
+		}
 		return false, true
 	}
 	// Otherwise, we hit a bound; treat as undecided
@@ -474,6 +491,8 @@ func PDFHasAllWordsWithinDistanceNoExtract(data []byte, words []string, distance
 	if pages <= 0 {
 		return false
 	}
+	start := time.Now()
+	maxDur := 1500 * time.Millisecond
 
 	// Precompile regexes for each search term: whole-word, case-insensitive
 	type match struct {
@@ -533,6 +552,10 @@ func PDFHasAllWordsWithinDistanceNoExtract(data []byte, words []string, distance
 
 		// Extend the sliding window with current page matches, shrinking as needed
 		for _, m := range pageMatches {
+			// mid-loop time guard
+			if time.Since(start) > maxDur {
+				return false
+			}
 			// push right
 			window = append(window, m)
 			if counts[m.wordIndex] == 0 {
@@ -600,6 +623,7 @@ func PDFContainsAllWordsNoDistancePath(path string, words []string) bool {
 	rs := make([]*regexp.Regexp, len(words))
 	found := make([]bool, len(words))
 	remaining := len(words)
+
 	for i, w := range words {
 		pattern := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
 		rs[i] = regexp.MustCompile(pattern)
@@ -622,6 +646,10 @@ func PDFContainsAllWordsNoDistancePath(path string, words []string) bool {
 				b.WriteByte(' ')
 			}
 			pageText := b.String()
+			if len(pageText) > PDFPageTextCapBytes {
+				atomic.AddInt64(&pdfPagesTruncated, 1)
+				pageText = pageText[:PDFPageTextCapBytes]
+			}
 
 			for wi, re := range rs {
 				if !found[wi] && re.MatchString(pageText) {
@@ -681,8 +709,8 @@ func PDFHasAllWordsWithinDistanceNoExtractPath(path string, words []string, dist
 		return false
 	}
 	start := time.Now()
-	maxDur := 3 * time.Second
-	maxPages := 250
+	maxDur := 1500 * time.Millisecond
+	maxPages := 200
 
 	type match struct {
 		pos       int
@@ -722,6 +750,10 @@ func PDFHasAllWordsWithinDistanceNoExtractPath(path string, words []string, dist
 				b.WriteByte(' ')
 			}
 			pageText = b.String()
+			if len(pageText) > PDFPageTextCapBytes {
+				atomic.AddInt64(&pdfPagesTruncated, 1)
+				pageText = pageText[:PDFPageTextCapBytes]
+			}
 		}()
 
 		if pageText == "" {

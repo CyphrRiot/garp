@@ -25,12 +25,13 @@ var progressMu sync.Mutex
 // progressMsg updates the top progress line while loading.
 // Format in View: "⏳ {Stage} [num/total]: filename"
 type progressMsg struct {
-	Stage      string
-	Count      int
-	Total      int
-	Path       string
-	PdfScanned int64
-	PdfSkipped int64
+	Stage        string
+	Count        int
+	Total        int
+	Path         string
+	PdfScanned   int64
+	PdfSkipped   int64
+	PdfTruncated int64
 }
 
 // Styles (exported styling used by CLI usage/version output too)
@@ -97,6 +98,7 @@ type model struct {
 	fileTimeoutBinary int
 	pdfScanned        int64
 	pdfSkipped        int64
+	pdfTruncated      int64
 	filterWorkers     int
 
 	// UI state
@@ -206,6 +208,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchTime = msg.searchTime
 		m.pdfScanned = msg.pdfScanned
 		m.pdfSkipped = msg.pdfSkipped
+		m.pdfTruncated = msg.pdfTruncated
 		m.totalPages = len(m.results)
 		if m.totalPages == 0 {
 			m.totalPages = 1
@@ -227,6 +230,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.totalFiles = msg.Total
 		m.pdfScanned = msg.PdfScanned
 		m.pdfSkipped = msg.PdfSkipped
+		m.pdfTruncated = msg.PdfTruncated
 		m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(msg.Stage), msg.Count, msg.Total, p)
 		// Keep polling progress while loading
 		return m, pollProgress()
@@ -244,6 +248,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.totalFiles = lp.Total
 			m.pdfScanned = lp.PdfScanned
 			m.pdfSkipped = lp.PdfSkipped
+			m.pdfTruncated = lp.PdfTruncated
 			m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(lp.Stage), lp.Count, lp.Total, p)
 		}
 		return m, pollProgress()
@@ -353,7 +358,7 @@ func (m model) View() string {
 	} else {
 		minutes = m.searchTime.Minutes()
 	}
-	elapsed := fmt.Sprintf("⏱️ Searched:  %.2f minutes • Matched: %d of %d files 📄 PDF: Scanned %d • Skipped %d", minutes, len(m.results), m.totalFiles, m.pdfScanned, m.pdfSkipped)
+	elapsed := fmt.Sprintf("⏱️ Searched:  %.2f minutes • Matched: %d of %d files 📄 PDF: Scanned %d • Skipped %d • Truncated %d", minutes, len(m.results), m.totalFiles, m.pdfScanned, m.pdfSkipped, m.pdfTruncated)
 	elapsedStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#8ab4f8"))
 	headerLines = append(headerLines, elapsedStyled.Render(elapsed))
 
@@ -525,28 +530,30 @@ func (m model) runSearch() tea.Cmd {
 	}
 	// Stream progress from the engine to the TUI header
 	se.OnProgress = func(stage string, processed, total int, path string) {
-		ps, sk := se.GetPDFStats()
+		ps, sk, tr := se.GetPDFStatsDetailed()
 
 		progressMu.Lock()
 		latestProgress = progressMsg{
-			Stage:      stage,
-			Count:      processed,
-			Total:      total,
-			Path:       path,
-			PdfScanned: ps,
-			PdfSkipped: sk,
+			Stage:        stage,
+			Count:        processed,
+			Total:        total,
+			Path:         path,
+			PdfScanned:   ps,
+			PdfSkipped:   sk,
+			PdfTruncated: tr,
 		}
 		haveLatestProgress = true
 		progressMu.Unlock()
 
 		// also push to the progress channel; drop oldest if full to keep latest flowing
 		msg := progressMsg{
-			Stage:      stage,
-			Count:      processed,
-			Total:      total,
-			Path:       path,
-			PdfScanned: ps,
-			PdfSkipped: sk,
+			Stage:        stage,
+			Count:        processed,
+			Total:        total,
+			Path:         path,
+			PdfScanned:   ps,
+			PdfSkipped:   sk,
+			PdfTruncated: tr,
 		}
 		select {
 		case progressChan <- msg:
@@ -570,12 +577,13 @@ func (m model) runSearch() tea.Cmd {
 		func() tea.Msg {
 			start := time.Now()
 			results, _ := se.Execute()
-			ps, sk := se.GetPDFStats()
+			ps, sk, tr := se.GetPDFStatsDetailed()
 			return searchResultMsg{
-				results:    results,
-				searchTime: time.Since(start),
-				pdfScanned: ps,
-				pdfSkipped: sk,
+				results:      results,
+				searchTime:   time.Since(start),
+				pdfScanned:   ps,
+				pdfSkipped:   sk,
+				pdfTruncated: tr,
 			}
 		},
 	)
@@ -708,10 +716,11 @@ func min(a, b int) int {
 
 // Messages for TUI updates
 type searchResultMsg struct {
-	results    []search.SearchResult
-	searchTime time.Duration
-	pdfScanned int64
-	pdfSkipped int64
+	results      []search.SearchResult
+	searchTime   time.Duration
+	pdfScanned   int64
+	pdfSkipped   int64
+	pdfTruncated int64
 }
 
 type memUsageMsg struct {

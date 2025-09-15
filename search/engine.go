@@ -242,7 +242,8 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
 				termsToCheck = terms[:2]
 			}
-			if !StreamContainsAllWords(filePath, termsToCheck) {
+			found, decided := StreamContainsAllWordsDecided(filePath, termsToCheck)
+			if decided && !found {
 				return false
 			}
 		}
@@ -682,9 +683,10 @@ func (se *SearchEngine) Execute() ([]SearchResult, error) {
 		}
 		// PDF governor summary
 		if atomic.LoadInt64(&se.pdfProcessed) > 0 || atomic.LoadInt64(&se.pdfSkippedBudget) > 0 {
-			fmt.Printf("  PDF scanned: %d • skipped (budget): %d\n",
+			fmt.Printf("  PDF scanned: %d • skipped (budget): %d • pages truncated: %d\n",
 				atomic.LoadInt64(&se.pdfProcessed),
-				atomic.LoadInt64(&se.pdfSkippedBudget))
+				atomic.LoadInt64(&se.pdfSkippedBudget),
+				atomic.LoadInt64(&pdfPagesTruncated))
 		}
 	}
 
@@ -726,4 +728,9 @@ func formatNumber(n int) string {
 // GetPDFStats returns PDF processing counters: processed and skipped due to budget.
 func (se *SearchEngine) GetPDFStats() (processed int64, skippedBudget int64) {
 	return atomic.LoadInt64(&se.pdfProcessed), atomic.LoadInt64(&se.pdfSkippedBudget)
+}
+
+// GetPDFStatsDetailed returns PDF counters including truncated page count for UI/metrics.
+func (se *SearchEngine) GetPDFStatsDetailed() (processed int64, skippedBudget int64, truncatedPages int64) {
+	return atomic.LoadInt64(&se.pdfProcessed), atomic.LoadInt64(&se.pdfSkippedBudget), atomic.LoadInt64(&pdfPagesTruncated)
 }
