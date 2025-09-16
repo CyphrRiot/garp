@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/richardlehane/mscfb"
 
@@ -207,7 +208,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 
 		// Stream up to maxBytes looking for the first word
 		const chunkSize = 64 * 1024
-		const maxBytes = 10 * 1024 * 1024
+		const maxBytes = 5 * 1024 * 1024
 		overlap := 32
 		if l := len(wLower) - 1; l > overlap {
 			overlap = l
@@ -328,7 +329,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		go func() {
 			defer wg.Done()
 			const chunkSize = 64 * 1024
-			const maxBytes = 10 * 1024 * 1024
+			const maxBytes = 5 * 1024 * 1024
 			overlap := 32
 			if l := len(wLower) - 1; l > overlap {
 				overlap = l
@@ -430,10 +431,14 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 			onProgress(processed, 0, path)
 		}
 
-		// Heavy files: conservative prefilter for non-PDF; include unless decisively absent
+		// Heavy files: PDF gets a presence-only prefilter; non-PDF use conservative prefilter
 		if heavy[ext] {
 			if ext == ".pdf" {
-				// PDFs are handled later under strict guardrails; include as candidate
+				// Presence-only prefilter with tight caps; only skip when conclusively absent
+				found, decided := PDFPresenceOnlyPathCapped(path, []string{word}, 32, 200*time.Millisecond)
+				if decided && !found {
+					return nil // safe to skip
+				}
 				mu.Lock()
 				matches = append(matches, path)
 				mu.Unlock()

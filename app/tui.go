@@ -231,7 +231,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pdfScanned = msg.PdfScanned
 		m.pdfSkipped = msg.PdfSkipped
 		m.pdfTruncated = msg.PdfTruncated
-		m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(msg.Stage), msg.Count, msg.Total, p)
+		if msg.Total > 0 {
+			m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(msg.Stage), msg.Count, msg.Total, p)
+		} else {
+			m.progressText = fmt.Sprintf("%s [%d]: %s", strings.Title(msg.Stage), msg.Count, p)
+		}
 		// Keep polling progress while loading
 		return m, pollProgress()
 
@@ -249,7 +253,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pdfScanned = lp.PdfScanned
 			m.pdfSkipped = lp.PdfSkipped
 			m.pdfTruncated = lp.PdfTruncated
-			m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(lp.Stage), lp.Count, lp.Total, p)
+			if lp.Total > 0 {
+				m.progressText = fmt.Sprintf("%s [%d/%d]: %s", strings.Title(lp.Stage), lp.Count, lp.Total, p)
+			} else {
+				m.progressText = fmt.Sprintf("%s [%d]: %s", strings.Title(lp.Stage), lp.Count, p)
+			}
 		}
 		return m, pollProgress()
 	}
