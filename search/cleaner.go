@@ -29,8 +29,8 @@ var (
 	// Lines with too many special characters (likely markup remnants)
 	junkLineRegex = regexp.MustCompile(`^[^a-zA-Z]*$|^[{}[\]();:=<>|\\]{3,}`)
 
-	// Junk lines with excessive = or #
-	junkSymbolsRegex = regexp.MustCompile(`(?m)^[\=\#]{5,}$`)
+	// Junk divider lines with excessive =, #, -, or _
+	junkSymbolsRegex = regexp.MustCompile(`(?m)^\s*[-_=#]{5,}\s*$`)
 
 	// Email quoting lines and markers
 	emailQuotingRegex   = regexp.MustCompile(`(?m)^>+.*$`)
@@ -62,9 +62,9 @@ func CleanContent(content string) string {
 	content = htmlEntityRegex.ReplaceAllString(content, " ")
 
 	// Remove control characters
-	content = controlCharRegex.ReplaceAllString(content, "")
+	content = controlCharRegex.ReplaceAllString(content, " ")
 
-	// Remove junk lines with excessive = or #
+	// Remove junk divider lines made of repeated =, #, -, or _
 	content = junkSymbolsRegex.ReplaceAllString(content, "")
 
 	// Remove email quoting lines
@@ -119,7 +119,7 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 		if tt == "" {
 			continue
 		}
-		termRE = append(termRE, regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(tt)+`\b`))
+		termRE = append(termRE, regexp.MustCompile(fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(tt))))
 	}
 	if len(termRE) == 0 {
 		return []string{}
@@ -185,109 +185,117 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 				}
 			}
 			if bestL >= 0 && len(excerpts) < maxExcerpts {
-				left := bestL
-				right := bestR
-				limitLeft := left - maxContext/2
-				if limitLeft < 0 {
-					limitLeft = 0
+				// Dynamic budget from UI (fallback to 400)
+				budget := 400
+				if ExcerptCharBudget != nil {
+					if b := ExcerptCharBudget(); b > 0 {
+						budget = b
+					}
 				}
-				// Expand left to sentence/email-header boundary
-				for left > limitLeft {
-					if cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?' {
-						break
-					}
-					if cleaned[left] == '\n' {
-						ls := left + 1
-						le := ls
-						for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
-							le++
-						}
-						if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
-							break
-						}
-					}
-					left--
+				if budget < 200 {
+					budget = 200
 				}
-				if left > 0 && (cleaned[left] == '.' || cleaned[left] == '!' || cleaned[left] == '?') {
-					left++
-				} else if left <= limitLeft {
-					// Paragraph fallback
-					if idx := strings.LastIndex(cleaned[limitLeft:bestL], "\n\n"); idx != -1 {
-						left = limitLeft + idx + 2
-					} else if idx := strings.LastIndex(cleaned[limitLeft:bestL], "\n"); idx != -1 {
-						left = limitLeft + idx + 1
-					} else {
-						left = limitLeft
-					}
+				if budget > 800 {
+					budget = 800
 				}
 
-				limitRight := right + maxContext/2
-				if limitRight > len(cleaned) {
-					limitRight = len(cleaned)
-				}
-				// Expand right to sentence/email-header boundary
-				for right < limitRight {
-					if cleaned[right] == '.' || cleaned[right] == '!' || cleaned[right] == '?' {
+				span := bestR - bestL
+				buildAndReturn := func(left, right int) []string {
+					// Trim to word boundaries
+					for left > 0 && cleaned[left] != ' ' {
+						left--
+					}
+					for right < len(cleaned) && right > 0 && cleaned[right-1] != ' ' {
 						right++
-						break
-					}
-					if cleaned[right] == '\n' {
-						ls := right + 1
-						le := ls
-						for le < len(cleaned) && cleaned[le] != '\n' && le-ls < 128 {
-							le++
-						}
-						if ls < len(cleaned) && emailHeaderRegex.MatchString(cleaned[ls:le]) {
+						if right >= len(cleaned) {
 							break
 						}
 					}
-					right++
-				}
-				if right >= limitRight {
-					// Paragraph fallback
-					if idx := strings.Index(cleaned[bestR:limitRight], "\n\n"); idx != -1 {
-						right = bestR + idx
-					} else if idx := strings.Index(cleaned[bestR:limitRight], "\n"); idx != -1 {
-						right = bestR + idx
-					} else {
-						right = limitRight
-					}
-				}
-
-				// Build stitched, sentence-aware excerpt and dedupe
-				snippet := strings.TrimSpace(cleaned[left:right])
-				if snippet != "" {
-					// Split the snippet into sentences and keep only those containing any search term
-					sentences := splitIntoSentences(snippet)
-					parts := make([]string, 0, len(sentences))
-					for _, s := range sentences {
-						st := strings.TrimSpace(s)
-						if st == "" {
-							continue
-						}
-						if containsAnySearchTerm(st, searchTerms) {
-							parts = append(parts, st)
-						}
-					}
-					var ex string
-					if len(parts) > 0 {
-						// Join with ellipses for clarity between separate sentences
-						ex = strings.Join(parts, " … ")
-					} else {
-						// Fallback to the raw snippet window if no sentence matched the filter
-						ex = snippet
-					}
-					// Normalize whitespace for display
+					ex := strings.TrimSpace(cleaned[left:right])
 					ex = strings.ReplaceAll(ex, "\n", " ")
 					ex = strings.ReplaceAll(ex, "\t", " ")
+					// Remove intra-line divider runs (e.g., ______, ------)
+					ex = regexp.MustCompile(`[-_=#]{5,}`).ReplaceAllString(ex, " ")
 					ex = regexp.MustCompile(`\s+`).ReplaceAllString(ex, " ")
+					if len(ex) > budget {
+						ex = ex[:budget]
+					}
+					if _, ok := seen[ex]; !ok && ex != "" {
+						seen[ex] = struct{}{}
+						excerpts = append(excerpts, ex)
+					}
+					return excerpts
+				}
+
+				if span <= budget {
+					// Center a window of size budget around the minimal span
+					pad := (budget - span) / 2
+					left := max(0, bestL-pad)
+					right := min(len(cleaned), bestR+pad)
+					return buildAndReturn(left, right)
+				}
+
+				// Minimal span is larger than budget:
+				// Compose one small window per term (in search-terms order) and join with " … ".
+				// This guarantees every term is visible and the final excerpt fits the budget.
+				perTerm := budget / max(1, len(termRE))
+				if perTerm < 60 {
+					perTerm = 60
+				}
+				var parts []string
+				used := 0
+				for _, re := range termRE {
+					if used >= budget {
+						break
+					}
+					loc := re.FindStringIndex(cleaned)
+					if loc == nil {
+						continue
+					}
+					l0 := loc[0] - (perTerm / 2)
+					if l0 < 0 {
+						l0 = 0
+					}
+					r0 := loc[1] + (perTerm / 2)
+					if r0 > len(cleaned) {
+						r0 = len(cleaned)
+					}
+					frag := strings.TrimSpace(cleaned[l0:r0])
+					frag = strings.ReplaceAll(frag, "\n", " ")
+					frag = strings.ReplaceAll(frag, "\t", " ")
+					// Remove intra-line divider runs (e.g., ______, ------)
+					frag = regexp.MustCompile(`[-_=#]{5,}`).ReplaceAllString(frag, " ")
+					frag = regexp.MustCompile(`\s+`).ReplaceAllString(frag, " ")
+					// Trim to remaining budget minus delimiter if needed
+					remain := budget - used
+					if len(parts) > 0 {
+						// account for delimiter length " … "
+						if remain > 3 {
+							remain -= 3
+						} else {
+							remain = 0
+						}
+					}
+					if remain <= 0 {
+						break
+					}
+					if len(frag) > remain {
+						frag = frag[:remain]
+					}
+					if frag != "" {
+						parts = append(parts, frag)
+						used += len(frag)
+					}
+				}
+				// Join parts and return
+				ex := strings.Join(parts, " … ")
+				if ex != "" {
 					if _, ok := seen[ex]; !ok {
 						seen[ex] = struct{}{}
 						excerpts = append(excerpts, ex)
-						// Prefer the all-terms excerpt first; return early if we have it
-						return excerpts
 					}
 				}
+				return excerpts
 			}
 		}
 	}
@@ -398,6 +406,29 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 	}
 
 	if len(excerpts) > 0 {
+		// Cap per-excerpt and total excerpt length to avoid overflow
+		const maxEx = 400
+		const maxTotal = 900
+		total := 0
+		for i := range excerpts {
+			if len(excerpts[i]) > maxEx {
+				excerpts[i] = excerpts[i][:maxEx]
+			}
+			total += len(excerpts[i])
+			if total > maxTotal {
+				// Trim current excerpt to fit and drop the rest
+				excess := total - maxTotal
+				cut := len(excerpts[i]) - excess
+				if cut < 0 {
+					cut = 0
+				}
+				if cut < len(excerpts[i]) {
+					excerpts[i] = excerpts[i][:cut]
+				}
+				excerpts = excerpts[:i+1]
+				break
+			}
+		}
 		return excerpts
 	}
 

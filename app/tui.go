@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -431,6 +432,59 @@ func (m model) View() string {
 			if innerWidth < 10 {
 				innerWidth = 10
 			}
+
+			// Minimal augmentation for Excerpt 1: if excerpts are short and some terms are missing,
+			// append small windows from CleanContent to ensure all terms are visible without blowing up layout.
+			if i == 0 && len(result.Excerpts) > 0 && result.CleanContent != "" {
+				totalLen := 0
+				for _, ex := range result.Excerpts {
+					totalLen += len(ex)
+				}
+				if totalLen < 400 {
+					// Find missing terms (plural-aware whole-word)
+					missing := make([]string, 0, len(m.searchWords))
+					for _, term := range m.searchWords {
+						pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(term))
+						re := regexp.MustCompile(pat)
+						if !re.MatchString(excerpt) {
+							missing = append(missing, term)
+						}
+					}
+					// Append small windows around missing terms from CleanContent
+					if len(missing) > 0 {
+						extra := ""
+						budget := 400
+						for _, term := range missing {
+							if len(extra) >= budget {
+								break
+							}
+							pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(term))
+							re := regexp.MustCompile(pat)
+							loc := re.FindStringIndex(result.CleanContent)
+							if loc != nil {
+								start := loc[0] - 120
+								if start < 0 {
+									start = 0
+								}
+								end := loc[1] + 120
+								if end > len(result.CleanContent) {
+									end = len(result.CleanContent)
+								}
+								frag := result.CleanContent[start:end]
+								if extra != "" {
+									extra += " … "
+								}
+								extra += frag
+							}
+						}
+						if extra != "" {
+							extra = search.HighlightTerms(extra, m.searchWords)
+							excerpt = excerpt + "\n" + extra
+						}
+					}
+				}
+			}
+
 			boxContent += wrapTextWithIndent(label, excerpt, innerWidth) + "\n"
 		}
 
@@ -577,6 +631,25 @@ func (m model) runSearch() tea.Cmd {
 		}
 	}
 
+	// Provide excerpt budget callback based on inner content width
+	search.ExcerptCharBudget = func() int {
+		w := m.width
+		if w <= 0 {
+			return 0
+		}
+		innerWidth := (w - 4) - 6
+		if innerWidth < 10 {
+			innerWidth = 10
+		}
+		b := innerWidth * 5
+		if b < 240 {
+			b = 240
+		}
+		if b > 600 {
+			b = 600
+		}
+		return b
+	}
 	total := 0
 
 	// Emit initial progress and then run the search

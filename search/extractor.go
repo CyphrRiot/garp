@@ -223,7 +223,7 @@ func (r *ExtractorRegistry) registerBuiltIns() {
 func IsBinaryFormat(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
-	case ".msg", ".docx", ".odt", ".rtf", ".pdf":
+	case ".msg", ".doc", ".docx", ".odt", ".rtf", ".pdf":
 		return true
 	case ".eml", ".mbox":
 		// EML/MBOX can be text but often encoded

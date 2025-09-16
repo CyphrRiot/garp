@@ -14,6 +14,11 @@ import (
 	"find-words/search/pdf"
 )
 
+// ExcerptCharBudget allows the UI to provide an inner-width–based char budget for excerpts.
+// If nil, the engine will use a safe default. The UI should set this to (innerWidth*5)
+// clamped to [240, 600] to keep the window stable.
+var ExcerptCharBudget func() int
+
 // SearchResult represents a file that matches all search criteria
 type SearchResult struct {
 	FilePath     string
@@ -663,8 +668,30 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 
 		// Clean content and extract excerpts (make excerpt window reflect distance)
 		cleanContent := CleanContent(content)
-		SetExcerptContextLimit(se.Distance)
-		excerpts := ExtractMeaningfulExcerpts(cleanContent, se.SearchWords, 10)
+		boundedClean := cleanContent
+		if len(boundedClean) > 64*1024 {
+			boundedClean = boundedClean[:64*1024]
+		}
+		// Compute excerpt char budget from UI width (if provided) to keep the window stable.
+		// Budget = innerWidth * 5, clamped to [240, 600]. Fallback to 400 if not provided.
+		budget := 400
+		if ExcerptCharBudget != nil {
+			if b := ExcerptCharBudget(); b > 0 {
+				budget = b
+			}
+		}
+		if budget < 240 {
+			budget = 240
+		}
+		if budget > 600 {
+			budget = 600
+		}
+
+		// Map the character budget to a context limit for excerpt generation (roughly half).
+		SetExcerptContextLimit(budget / 2)
+
+		// Single excerpt keeps the UI height stable.
+		excerpts := ExtractMeaningfulExcerpts(cleanContent, se.SearchWords, 1)
 
 		// If excerpts are very short (e.g., only a single terse sentence), expand the first excerpt
 		// by pulling in neighboring sentences to provide more context. This helps fill the UI box
@@ -734,7 +761,7 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 			FilePath:     filePath,
 			FileSize:     fileSize,
 			Excerpts:     highlightedExcerpts,
-			CleanContent: "",
+			CleanContent: boundedClean,
 			EmailDate:    emailDate,
 			EmailSubject: emailSubject,
 		}
