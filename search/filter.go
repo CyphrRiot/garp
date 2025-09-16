@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/richardlehane/mscfb"
 
@@ -213,7 +212,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 		if l := len(wLower) - 1; l > overlap {
 			overlap = l
 		}
-		time.Sleep(2 * time.Millisecond)
+
 		f, openErr := os.Open(path)
 		if openErr != nil {
 			return nil
@@ -320,7 +319,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 	var mu sync.Mutex
 
 	// Bounded worker pool
-	workers := 1
+	workers := 4
 	paths := make(chan string, 1024)
 	var wg sync.WaitGroup
 
@@ -337,7 +336,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 			}
 
 			for p := range paths {
-				time.Sleep(2 * time.Millisecond)
+
 				f, openErr := os.Open(p)
 				if openErr != nil {
 					continue
@@ -430,10 +429,6 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		processed++
 		if onProgress != nil {
 			onProgress(processed, total, path)
-		}
-		// Light throttle to reduce I/O/CPU bursts during discovery
-		if processed%250 == 0 {
-			time.Sleep(2 * time.Millisecond)
 		}
 
 		// Heavy files: conservative prefilter for non-PDF; include unless decisively absent
@@ -935,27 +930,9 @@ func BinaryStreamingPrefilterDecided(filePath string, words []string, capBytes i
 		return false, false
 
 	case ".pdf":
-		// Capped synchronous PDF presence-only prefilter to avoid goroutines.
-		if len(words) <= 1 {
-			found, decided := PDFPresenceOnlyPathCapped(filePath, words, 250, 800*time.Millisecond)
-			return found, decided
-		} else {
-			present, decided := PDFPresenceOnlyPathCapped(filePath, words, 250, 800*time.Millisecond)
-			if decided && !present {
-				// Fast negative => decisively absent (skip without heavy work)
-				return false, true
-			}
-			if decided && present {
-				// Present: run bounded distance-window scan
-				if PDFHasAllWordsWithinDistanceNoExtractPath(filePath, words, 5000) {
-					return true, true
-				}
-				// Distance-window not confirmed within bounds => undecided
-				return false, false
-			}
-			// Prefilter undecided => undecided (do not skip)
-			return false, false
-		}
+		// DISABLED: PDF scanning completely disabled to prevent system hangs
+		// Always return undecided so PDFs proceed to extraction phase safely
+		return false, false
 	default:
 		// For other types, leave decision to the main path.
 		return false, false
@@ -1138,8 +1115,12 @@ func StreamContainsWord(filePath string, word string) bool {
 	return false
 }
 
-// asciiIndexWholeWordCI performs a fast ASCII, case-insensitive, whole-word search
-// with basic plural-awareness: matches base, base+s, or base+es.
+// pdfIsolatedScan is now disabled - PDFs are always treated as undecided to prevent system hangs
+func pdfIsolatedScan(filePath string, words []string) (bool, bool) {
+	// DISABLED: Always return undecided to prevent PDF library from causing system hangs
+	return false, false
+}
+
 func asciiIndexWholeWordCI(buf []byte, wordLower []byte) bool {
 	if len(wordLower) == 0 || len(buf) < len(wordLower) {
 		return false

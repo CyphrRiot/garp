@@ -39,6 +39,8 @@ const PDFPageTextCapBytes = 131072
 //   - found=true, decided=true   => conclusively found all words
 //   - found=false, decided=true  => conclusively absent within bounds
 //   - found=false, decided=false => cap/time bound reached; do not skip based on this
+//
+// This function is safe for use in subprocess contexts and includes panic recovery.
 func PDFPresenceOnlyPathCapped(path string, words []string, maxPages int, maxDur time.Duration) (bool, bool) {
 	if len(words) == 0 {
 		return true, true
@@ -213,8 +215,8 @@ func (r *ExtractorRegistry) registerBuiltIns() {
 	// Other
 	r.extractors["rtf"] = &RTFExtractor{}
 
-	// PDFs (on-demand extraction; bulk path remains non-extractive)
-	r.extractors["pdf"] = &PDFExtractor{}
+	// PDFs DISABLED: Removed PDF extractor to prevent system hangs
+	// r.extractors["pdf"] = &PDFExtractor{}
 }
 
 // IsBinaryFormat checks if a file extension requires text extraction
@@ -674,6 +676,7 @@ func PDFContainsAllWordsNoDistancePath(path string, words []string) bool {
 // PDFHasAllWordsWithinDistanceNoExtractPath streams a PDF from disk to check if ALL
 // words appear within the specified distance window (unordered, whole-word, CI)
 // without full extraction. Bounded memory via per-page sliding window.
+// This function is safe for use in subprocess contexts and includes panic recovery.
 func PDFHasAllWordsWithinDistanceNoExtractPath(path string, words []string, distance int) bool {
 	if len(words) == 0 {
 		return true

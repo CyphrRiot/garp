@@ -24,7 +24,7 @@ No relation to the [John Irving novel of the same name](https://en.wikipedia.org
 
 ```bash
 garp contract payment agreement
-garp contract payment agreement --distance 200
+garp contract payment agreement --distance 200 --not .pdf
 garp mutex changed --code
 garp bank wire update --not .txt test
 ```

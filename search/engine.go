@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"find-words/search/pdf"
 )
 
 // SearchResult represents a file that matches all search criteria
@@ -60,6 +62,12 @@ func (cm *ConcurrencyManager) ExecuteWithTimeout(fn func(), timeout time.Duratio
 
 // heavySem is a single-slot semaphore to bound concurrent binary extractions
 var heavySem = make(chan struct{}, 1)
+
+// enablePDFs gates PDF processing within engine.go; default false preserves current behavior.
+var enablePDFs = true
+
+// pdfSem is a single global token to ensure PDF concurrency = 1 without risking hangs.
+var pdfSem = make(chan struct{}, 2)
 
 // PDF governor: pacing + budget, synchronous and safe.
 // Returns true if this PDF is allowed to proceed now; false when skipped due to budget.
@@ -137,7 +145,7 @@ func NewSearchEngine(searchWords, excludeWords []string, fileTypes []string, inc
 		FileTimeoutBinary: time.Duration(fileTimeoutBinary) * time.Millisecond,
 
 		// PDF governor defaults (safe)
-		pdfMinInterval: 250 * time.Millisecond,
+		pdfMinInterval: 0,
 		pdfBudget:      0, // unlimited by default
 		pdfLastAt:      0, // no pacing history yet
 	}
@@ -254,10 +262,64 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 			if IsBinaryFormat(filePath) {
 				ext := filepath.Ext(filePath)
 
-				// PDF governor: pacing and budget (only affects PDFs)
+				// PDF presence-only gate (Step 2): enable guarded scan; otherwise remain disabled.
 				if strings.EqualFold(ext, ".pdf") {
-					if !se.pdfGovernorAllow() {
+					// Remain disabled unless explicitly enabled.
+					if !enablePDFs {
 						return false
+					}
+					// Global governor: pacing/budget.
+					if !se.pdfGovernorAllow() {
+						// Skipped due to budget (truthfully counted), do not proceed.
+						return false
+					}
+					// Concurrency = 1 with short timeout to guarantee we never hang.
+					tokenTimer := time.NewTimer(50 * time.Millisecond)
+					defer tokenTimer.Stop()
+					select {
+					case pdfSem <- struct{}{}:
+						// acquired
+					case <-tokenTimer.C:
+						// Could not acquire quickly; treat as undecided (do not skip via prefilter here).
+						return false
+					}
+					// Ensure release even if provider panics.
+					defer func() { <-pdfSem }()
+					// Simple bounded text extraction via pdfcpu helper; undecided on timeout/error.
+					hasAllWords = false
+
+					type txtRes struct {
+						txt     string
+						matched bool
+						err     error
+					}
+					resCh := make(chan txtRes, 1)
+					go func() {
+						defer func() { _ = recover() }()
+						t, m, e := pdf.ExtractAllTextCapped(filePath, 200, 128*1024, se.SearchWords, se.Distance)
+						resCh <- txtRes{txt: t, matched: m, err: e}
+					}()
+
+					wallTimer := time.NewTimer(250 * time.Millisecond)
+					defer wallTimer.Stop()
+
+					var matched bool
+					var err error
+					select {
+					case r := <-resCh:
+						matched, err = r.matched, r.err
+					case <-wallTimer.C:
+						// Timeout: undecided, do not accept based on this.
+						return false
+					}
+
+					if err != nil {
+						// Undecided/error: do not accept based on this.
+						return false
+					}
+
+					if matched {
+						hasAllWords = true
 					}
 				}
 
@@ -283,11 +345,11 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				if decided && !found {
 					return false
 				}
-				// Decided positive:
-				// - For PDFs (distance-window prefilter) or single-word queries, we can accept without extraction.
-				// - For other multi-word binaries, verify distance with extraction.
-				if decided && found && (strings.EqualFold(ext, ".pdf")) {
-					hasAllWords = true
+				// DISABLED: PDF processing completely disabled to prevent system hangs
+				// Never accept PDFs based on prefilter alone
+				if strings.EqualFold(ext, ".pdf") && !enablePDFs {
+					// Skip all PDF processing to prevent hangs
+					return false
 				} else {
 					// Extract and verify distance for multi-word binaries
 					if extractor, exists := se.Registry.GetExtractor(ext); exists {
@@ -360,9 +422,31 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 				if decidedPF && !foundPF {
 					return false
 				}
-				// If PDF and prefilter was conclusively positive, accept without extraction here
-				if decidedPF && foundPF && strings.EqualFold(ext, ".pdf") {
-					hasAllWords = true
+				// PDF presence-only gate for single-word (Step 2): guarded, no extraction.
+				if strings.EqualFold(ext, ".pdf") {
+					if !enablePDFs {
+						// Keep disabled behavior: do not accept based on generic prefilter.
+					} else {
+						// Governor + single concurrency token with short timeout to avoid hangs.
+						if !se.pdfGovernorAllow() {
+							return false
+						}
+						tokenTimer := time.NewTimer(50 * time.Millisecond)
+						defer tokenTimer.Stop()
+						select {
+						case pdfSem <- struct{}{}:
+							defer func() { <-pdfSem }()
+						case <-tokenTimer.C:
+							return false
+						}
+						foundOne, decidedOne := PDFPresenceOnlyPathCapped(filePath, []string{word}, 250, 800*time.Millisecond)
+						if decidedOne && !foundOne {
+							return false
+						}
+						if decidedOne && foundOne {
+							hasAllWords = true
+						}
+					}
 				} else {
 					// Bounded extraction fallback under semaphore + timeout
 					rawContent, _, err := GetFileContent(filePath)

@@ -17,7 +17,7 @@ build: $(BINARY_PATH)
 $(BINARY_PATH): $(GO_FILES)
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p bin
-	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) .
+	go build -tags pdfcpu -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) .
 	@echo "Build completed: $(BINARY_PATH)"
 
 # Clean build artifacts
@@ -63,12 +63,25 @@ run: build
 	./$(BINARY_PATH)
 
 # Install to user's local bin directory
-install: build
+install: tidy build
 	@echo "Installing $(BINARY_NAME) to ~/.local/bin..."
 	@mkdir -p ~/.local/bin
 	cp $(BINARY_PATH) ~/.local/bin/
 	@echo "Installation completed: ~/.local/bin/$(BINARY_NAME)"
 	@echo "Make sure ~/.local/bin is in your PATH"
+	scp ~/.local/bin/garp grendel:~/.local/bin
+
+# Install with pdfcpu build tag (opt-in)
+install-pdfcpu: tidy
+	@echo "Building $(BINARY_NAME) with pdfcpu tag..."
+	@mkdir -p bin
+	go build -tags pdfcpu -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) .
+	@echo "Build completed (pdfcpu): $(BINARY_PATH)"
+	@echo "Installing $(BINARY_NAME) to ~/.local/bin..."
+	@mkdir -p ~/.local/bin
+	cp $(BINARY_PATH) ~/.local/bin/
+	@echo "Installation completed: ~/.local/bin/$(BINARY_NAME)"
+	scp ~/.local/bin/garp grendel:~/.local/bin
 
 # Uninstall from user's local bin directory
 uninstall:
@@ -88,7 +101,8 @@ help:
 	@echo "  dev      - Build development version with race detection"
 	@echo "  run      - Build and run with help"
 	@echo "  install  - Install to ~/.local/bin"
+	@echo "  install-pdfcpu - Build with tag 'pdfcpu' and install (also scp to grendel)"
 	@echo "  uninstall- Remove from ~/.local/bin"
 	@echo "  help     - Show this help"
 
-.PHONY: all build clean test fmt tidy deps dev run install uninstall help
+.PHONY: all build clean test fmt tidy deps dev run install install-pdfcpu uninstall help

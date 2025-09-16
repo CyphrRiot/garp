@@ -346,7 +346,7 @@ func (m model) View() string {
 	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc+suffix, width-4)))
 
 	// Engine line with cores + RAM/CPU live (aligned)
-	engineContent := fmt.Sprintf("Workers (filters) %d • Heavy (auto) %d%s", m.filterWorkers, m.heavyConcurrency, m.memUsageText)
+	engineContent := fmt.Sprintf("Workers %d • Heavy Threads %d%s", m.filterWorkers, m.heavyConcurrency, m.memUsageText)
 	enginePrefix := "⚙️ Engine:    "
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7"))
 	headerLines = append(headerLines, engineStyled.Render(wrapTextWithIndent(enginePrefix, engineContent, width-4)))
@@ -427,7 +427,7 @@ func (m model) View() string {
 		}
 
 		// Page indicator
-		boxContent += fmt.Sprintf("Result %d of %d", m.currentPage+1, len(m.results))
+
 	}
 
 	boxOuterWidth := width - 4
@@ -487,7 +487,7 @@ func (m model) View() string {
 			noBtn = noUn.Render("[ No ]")
 		}
 
-		cont := infoStyle.Render("Continue? ") + yesBtn + "    " + noBtn
+		cont := infoStyle.Render(fmt.Sprintf("Result [ %d / %d ] -- Continue?  ", m.currentPage+1, len(m.results))) + yesBtn + "      " + noBtn
 		bottomStatus = cont
 	}
 
@@ -575,12 +575,12 @@ func (m model) runSearch() tea.Cmd {
 	return tea.Batch(
 		func() tea.Msg { return progressMsg{Stage: "Discovery", Count: 0, Total: total, Path: ""} },
 		func() tea.Msg {
-			start := time.Now()
+
 			results, _ := se.Execute()
 			ps, sk, tr := se.GetPDFStatsDetailed()
 			return searchResultMsg{
 				results:      results,
-				searchTime:   time.Since(start),
+				searchTime:   time.Since(startWall),
 				pdfScanned:   ps,
 				pdfSkipped:   sk,
 				pdfTruncated: tr,
