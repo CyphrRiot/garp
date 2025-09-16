@@ -298,10 +298,9 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		}
 	}
 
-	// Estimate total and emit initial progress
-	total, _ := GetDocumentFileCount(fileTypes)
+	// Emit initial progress with unknown total
 	if onProgress != nil {
-		onProgress(0, total, "")
+		onProgress(0, 0, "")
 	}
 
 	wLower := strings.ToLower(word)
@@ -428,7 +427,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 
 		processed++
 		if onProgress != nil {
-			onProgress(processed, total, path)
+			onProgress(processed, 0, path)
 		}
 
 		// Heavy files: conservative prefilter for non-PDF; include unless decisively absent

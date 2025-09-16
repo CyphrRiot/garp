@@ -569,7 +569,7 @@ func (m model) runSearch() tea.Cmd {
 		}
 	}
 
-	total, _ := search.GetDocumentFileCount(fileTypes)
+	total := 0
 
 	// Emit initial progress and then run the search
 	return tea.Batch(

@@ -173,10 +173,7 @@ func (se *SearchEngine) DiscoverCandidates(fileCount int) ([]string, int, error)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to find files with first word: %w", err)
 	}
-	total := fileCount
-	if len(candidateFiles) > 0 && len(candidateFiles) < fileCount {
-		total = len(candidateFiles)
-	}
+	total := len(candidateFiles)
 	if len(candidateFiles) == 0 {
 		if !se.Silent {
 			fmt.Printf("No files found containing '%s'\n", se.SearchWords[0])
@@ -693,28 +690,19 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 func (se *SearchEngine) Execute() ([]SearchResult, error) {
 	startTime := time.Now()
 
-	// Step 1: Get file count estimate
-	fileCount, err := GetDocumentFileCount(se.FileTypes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file count: %w", err)
-	}
-	// Emit initial progress with 0 processed
+	// Emit initial progress with unknown total (0); discovery will update it
 	if se.OnProgress != nil {
-		se.OnProgress("discovery", 0, fileCount, "")
-	}
-
-	if !se.Silent {
-		fmt.Printf("Document files to search: %s\n", formatNumber(fileCount))
+		se.OnProgress("discovery", 0, 0, "")
 	}
 
 	// Step 2: Discover candidates
-	candidateFiles, total, err := se.DiscoverCandidates(fileCount)
+	candidateFiles, total, err := se.DiscoverCandidates(0)
 	if err != nil {
 		return nil, err
 	}
 	if candidateFiles == nil {
 		if se.OnProgress != nil {
-			se.OnProgress("discovery", 0, fileCount, "")
+			se.OnProgress("discovery", 0, 0, "")
 		}
 		return nil, nil
 	}
