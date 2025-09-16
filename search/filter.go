@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/richardlehane/mscfb"
 
@@ -431,14 +430,10 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 			onProgress(processed, 0, path)
 		}
 
-		// Heavy files: PDF gets a presence-only prefilter; non-PDF use conservative prefilter
+		// Heavy files: conservative prefilter for non-PDF; include unless decisively absent
 		if heavy[ext] {
 			if ext == ".pdf" {
-				// Presence-only prefilter with tight caps; only skip when conclusively absent
-				found, decided := PDFPresenceOnlyPathCapped(path, []string{word}, 32, 200*time.Millisecond)
-				if decided && !found {
-					return nil // safe to skip
-				}
+				// PDFs are handled later under strict guardrails; include as candidate
 				mu.Lock()
 				matches = append(matches, path)
 				mu.Unlock()
