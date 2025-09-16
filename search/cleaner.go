@@ -505,28 +505,121 @@ func containsAnySearchTerm(text string, searchTerms []string) bool {
 }
 
 // splitIntoSentences splits content into sentences for better excerpt extraction
-
+// Improved boundaries:
+// - End at punctuation followed by whitespace OR directly followed by an uppercase letter.
+// - Avoid splitting inside common abbreviations (e.g., "e.g.", "i.e.", "Dr.", "U.S.") and decimals (e.g., "3.14").
+// - Treat double newlines as hard paragraph boundaries.
+// Falls back to line or chunk splitting when boundaries are scarce.
 func splitIntoSentences(content string) []string {
 	// Clean content first
 	cleaned := CleanContent(content)
-
-	// Split by common sentence endings
-	sentences := regexp.MustCompile(`[.!?]+\s+`).Split(cleaned, -1)
-
-	// If no sentence breaks, split by line breaks
-	if len(sentences) == 1 {
-		sentences = strings.Split(cleaned, "\n")
+	if strings.TrimSpace(cleaned) == "" {
+		return []string{}
 	}
 
-	// If still one big chunk, split by double spaces or long phrases
-	if len(sentences) == 1 && len(cleaned) > 500 {
-		// Try splitting by double spaces or other natural breaks
-		if strings.Contains(cleaned, "  ") {
-			sentences = strings.Split(cleaned, "  ")
-		} else {
-			// Split into chunks of ~100 characters at word boundaries
-			sentences = chunkText(cleaned, 100)
+	// Common abbreviations (lowercased without trailing dot)
+	abbr := map[string]bool{
+		"mr": true, "mrs": true, "ms": true, "dr": true, "prof": true,
+		"sr": true, "jr": true, "st": true, "vs": true, "no": true,
+		"inc": true, "ltd": true, "co": true, "u.s": true, "u.k": true,
+		"e.g": true, "i.e": true,
+	}
+
+	sentences := make([]string, 0, 16)
+	var sb strings.Builder
+
+	isUpper := func(r rune) bool { return unicode.IsUpper(r) }
+	isDigit := func(r rune) bool { return r >= '0' && r <= '9' }
+
+	runes := []rune(cleaned)
+	n := len(runes)
+	for i := 0; i < n; i++ {
+		r := runes[i]
+		sb.WriteRune(r)
+
+		// Hard paragraph boundary on double newline
+		if r == '\n' {
+			if i+1 < n && runes[i+1] == '\n' {
+				s := strings.TrimSpace(sb.String())
+				if s != "" {
+					sentences = append(sentences, s)
+				}
+				sb.Reset()
+				i++ // consume the second newline
+				continue
+			}
 		}
+
+		// Sentence-ending punctuation
+		if r == '.' || r == '!' || r == '?' {
+			// Avoid decimals: digit '.' digit
+			if i > 0 && i+1 < n && isDigit(runes[i-1]) && isDigit(runes[i+1]) {
+				continue
+			}
+
+			// Abbreviation check: capture token before dot
+			j := i - 1
+			for j >= 0 && unicode.IsSpace(runes[j]) {
+				j--
+			}
+			k := j
+			for k >= 0 && unicode.IsLetter(runes[k]) {
+				k--
+			}
+			token := strings.ToLower(string(runes[k+1 : j+1])) // letters immediately before '.'
+			if token != "" && abbr[token] {
+				// e.g., "Dr.", "Inc.", "e.g.", "U.S."
+				// For initialisms like "U.S." the next '.' will be handled here as well.
+				continue
+			}
+
+			// Decide boundary based on next rune
+			nextIsUpper, nextIsSpace := false, false
+			if i+1 < n {
+				next := runes[i+1]
+				nextIsUpper = isUpper(next)
+				nextIsSpace = unicode.IsSpace(next)
+			} else {
+				nextIsSpace = true
+			}
+
+			if nextIsSpace || nextIsUpper {
+				// End of sentence here
+				s := strings.TrimSpace(sb.String())
+				if s != "" {
+					sentences = append(sentences, s)
+				}
+				sb.Reset()
+
+				// Skip a single space after punctuation to avoid leading space
+				if nextIsSpace && i+1 < n && unicode.IsSpace(runes[i+1]) {
+					i++
+				}
+			}
+		}
+	}
+
+	// Flush remainder
+	if sb.Len() > 0 {
+		s := strings.TrimSpace(sb.String())
+		if s != "" {
+			sentences = append(sentences, s)
+		}
+	}
+
+	// Fallbacks when we couldn't segment well
+	if len(sentences) == 0 {
+		parts := strings.Split(cleaned, "\n")
+		if len(parts) > 1 {
+			return parts
+		}
+		if len(cleaned) > 500 {
+			if strings.Contains(cleaned, "  ") {
+				return strings.Split(cleaned, "  ")
+			}
+			return chunkText(cleaned, 100)
+		}
+		return []string{cleaned}
 	}
 
 	return sentences

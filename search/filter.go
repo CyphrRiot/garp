@@ -284,7 +284,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 }
 
 // FindFilesWithFirstWordProgress is like FindFilesWithFirstWord but emits per-file discovery progress.
-func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress func(processed, total int, path string)) ([]string, error) {
+func FindFilesWithFirstWordProgress(words []string, fileTypes []string, onProgress func(processed, total int, path string)) ([]string, error) {
 	// Parse allowed extensions from patterns like "-g", "*.txt"
 	allowed := make(map[string]bool)
 	for i := 0; i < len(fileTypes); i++ {
@@ -303,7 +303,14 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 		onProgress(0, 0, "")
 	}
 
-	wLower := strings.ToLower(word)
+	primaryLower := strings.ToLower(words[0])
+	termsToCheck := words
+	if len(words) >= 3 {
+		terms := make([]string, len(words))
+		copy(terms, words)
+		sort.Slice(terms, func(i, j int) bool { return len(terms[i]) > len(terms[j]) })
+		termsToCheck = terms[:2]
+	}
 	heavy := map[string]bool{
 		".pdf":  true,
 		".docx": true,
@@ -330,7 +337,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 			const chunkSize = 64 * 1024
 			const maxBytes = 5 * 1024 * 1024
 			overlap := 32
-			if l := len(wLower) - 1; l > overlap {
+			if l := len(primaryLower) - 1; l > overlap {
 				overlap = l
 			}
 
@@ -347,7 +354,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 					_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 					_ = f.Close()
 
-					found := asciiIndexWholeWordCI(data, []byte(wLower))
+					found := asciiIndexWholeWordCI(data, []byte(primaryLower))
 					if found {
 						mu.Lock()
 						matches = append(matches, p)
@@ -372,7 +379,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 					n, rErr := f.Read(buf[:toRead])
 					if n > 0 {
 						combined := append(prev, buf[:toRead]...)
-						if asciiIndexWholeWordCI(combined, []byte(wLower)) {
+						if asciiIndexWholeWordCI(combined, []byte(primaryLower)) {
 							found = true
 						}
 						if n >= overlap {
@@ -448,7 +455,7 @@ func FindFilesWithFirstWordProgress(word string, fileTypes []string, onProgress 
 			default:
 				capBytes = 2 * 1024 * 1024
 			}
-			found, decided := BinaryStreamingPrefilterDecided(path, []string{word}, capBytes)
+			found, decided := BinaryStreamingPrefilterDecided(path, termsToCheck, capBytes)
 			if decided && !found {
 				return nil // safe to skip
 			}
