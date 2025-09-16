@@ -640,7 +640,29 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 				}
 			}
 
-			if extractor, exists := se.Registry.GetExtractor(ext); exists {
+			if strings.EqualFold(ext, ".pdf") && enablePDFs {
+				// Bounded PDF text extraction via pdfcpu helper with strict wall timeout and caps
+				var txt string
+				var perr error
+				if errTimeout := cm.ExecuteWithTimeout(func() {
+					t, _, e := pdf.ExtractAllTextCapped(filePath, 200, 128*1024, se.SearchWords, se.Distance)
+					if e != nil {
+						perr = e
+						return
+					}
+					txt = t
+				}, 250*time.Millisecond); errTimeout != nil || perr != nil {
+					if !se.Silent {
+						if errTimeout != nil {
+							fmt.Printf("Warning: PDF extraction timeout for %s\n", filePath)
+						} else {
+							fmt.Printf("Warning: PDF extraction error for %s: %v\n", filePath, perr)
+						}
+					}
+					continue
+				}
+				content = txt
+			} else if extractor, exists := se.Registry.GetExtractor(ext); exists {
 				err = cm.ExecuteWithTimeout(func() {
 					content, err = extractor.ExtractText([]byte(rawContent))
 				}, se.FileTimeoutBinary)
