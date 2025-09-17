@@ -6,6 +6,7 @@ package pdf
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -123,10 +124,36 @@ func ExtractAllTextCapped(path string, pageCap, perPageCap int, words []string, 
 	// Panic protection around library call.
 	defer func() { _ = recover() }()
 
-	// Get total page count
-	pageCount, err := api.PageCountFile(path)
-	if err != nil {
-		return "", false, fmt.Errorf("page count: %w", err)
+	// Get total page count (silence pdfcpu stderr/stdout; treat errors as undecided)
+	var pageCount int
+	{
+		oldErr := os.Stderr
+		oldOut := os.Stdout
+		rE, wE, _ := os.Pipe()
+		rO, wO, _ := os.Pipe()
+		os.Stderr = wE
+		os.Stdout = wO
+
+		// Perform the call
+		pc, perr := api.PageCountFile(path)
+
+		// Close writers and drain readers
+		_ = wE.Close()
+		_ = wO.Close()
+		_, _ = io.Copy(io.Discard, rE)
+		_, _ = io.Copy(io.Discard, rO)
+		_ = rE.Close()
+		_ = rO.Close()
+
+		// Restore stdio
+		os.Stderr = oldErr
+		os.Stdout = oldOut
+
+		if perr != nil {
+			// Treat as undecided without surfacing error to TUI
+			return "", false, nil
+		}
+		pageCount = pc
 	}
 
 	// Simple string literal parser for PDF content streams.
@@ -199,9 +226,31 @@ func ExtractAllTextCapped(path string, pageCap, perPageCap int, words []string, 
 		}
 		defer os.RemoveAll(tmpDir)
 
-		// Dump content streams (PDF syntax) for the page range.
-		if err := api.ExtractContentFile(path, tmpDir, pages, nil); err != nil {
-			return "", false, fmt.Errorf("pdfcpu ExtractContentFile: %w", err)
+		// Dump content streams (PDF syntax) for the page range (silence pdfcpu; treat errors as undecided)
+		{
+			oldErr := os.Stderr
+			oldOut := os.Stdout
+			rE, wE, _ := os.Pipe()
+			rO, wO, _ := os.Pipe()
+			os.Stderr = wE
+			os.Stdout = wO
+
+			callErr := api.ExtractContentFile(path, tmpDir, pages, nil)
+
+			_ = wE.Close()
+			_ = wO.Close()
+			_, _ = io.Copy(io.Discard, rE)
+			_, _ = io.Copy(io.Discard, rO)
+			_ = rE.Close()
+			_ = rO.Close()
+
+			os.Stderr = oldErr
+			os.Stdout = oldOut
+
+			if callErr != nil {
+				// Treat as undecided without surfacing error to TUI
+				return "", false, nil
+			}
 		}
 
 		// Read generated files, process in name order.

@@ -72,7 +72,7 @@ var heavySem = make(chan struct{}, 1)
 var enablePDFs = true
 
 // pdfSem is a single global token to ensure PDF concurrency = 1 without risking hangs.
-var pdfSem = make(chan struct{}, 2)
+var pdfSem = make(chan struct{}, 1)
 
 // PDF governor: pacing + budget, synchronous and safe.
 // Returns true if this PDF is allowed to proceed now; false when skipped due to budget.
@@ -283,6 +283,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 						// acquired
 					case <-tokenTimer.C:
 						// Could not acquire quickly; treat as undecided (do not skip via prefilter here).
+						// undecided (token): skipped
 						return false
 					}
 					// Ensure release even if provider panics.
@@ -312,6 +313,7 @@ func (se *SearchEngine) FilterCandidates(candidateFiles []string, total int, sta
 						matched, err = r.matched, r.err
 					case <-wallTimer.C:
 						// Timeout: undecided, do not accept based on this.
+						// undecided (timeout): skipped
 						return false
 					}
 
@@ -641,6 +643,19 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 			}
 
 			if strings.EqualFold(ext, ".pdf") && enablePDFs {
+				// Try-acquire global PDF token with 50ms deadline to serialize pdfcpu usage
+				tokenTimer := time.NewTimer(50 * time.Millisecond)
+				acquired := false
+				select {
+				case pdfSem <- struct{}{}:
+					acquired = true
+				case <-tokenTimer.C:
+					// Could not acquire quickly; treat as undecided and skip quietly
+				}
+				if !acquired {
+					continue
+				}
+				defer func() { <-pdfSem }()
 				// Bounded PDF text extraction via pdfcpu helper with strict wall timeout and caps
 				var txt string
 				var perr error
@@ -652,13 +667,7 @@ func (se *SearchEngine) ExtractAndBuildResults(matchingFiles []string) ([]Search
 					}
 					txt = t
 				}, 250*time.Millisecond); errTimeout != nil || perr != nil {
-					if !se.Silent {
-						if errTimeout != nil {
-							fmt.Printf("Warning: PDF extraction timeout for %s\n", filePath)
-						} else {
-							fmt.Printf("Warning: PDF extraction error for %s: %v\n", filePath, perr)
-						}
-					}
+					// Suppress pdfcpu errors/timeouts in extraction; treat as undecided and skip quietly
 					continue
 				}
 				content = txt
