@@ -25,10 +25,12 @@ type Arguments struct {
 	SearchWords       []string
 	ExcludeWords      []string
 	IncludeCode       bool
+	SmartForms        bool
 	Distance          int
 	HeavyConcurrency  int
 	FilterWorkers     int
 	FileTimeoutBinary int
+	OnlyType          string
 }
 
 // parseArguments parses command line args
@@ -48,6 +50,7 @@ func parseArguments(args []string) *Arguments {
 	expectHeavy := false
 	expectTimeout := false
 	expectWorkers := false
+	expectOnly := false
 	heavyProvided := false
 
 	for _, a := range args {
@@ -80,6 +83,11 @@ func parseArguments(args []string) *Arguments {
 			expectWorkers = false
 			continue
 		}
+		if expectOnly {
+			result.OnlyType = strings.TrimPrefix(strings.ToLower(a), ".")
+			expectOnly = false
+			continue
+		}
 		switch a {
 		case "--code":
 			result.IncludeCode = true
@@ -93,6 +101,10 @@ func parseArguments(args []string) *Arguments {
 			expectTimeout = true
 		case "--workers", "-workers":
 			expectWorkers = true
+		case "--only":
+			expectOnly = true
+		case "--smart-forms":
+			result.SmartForms = true
 		case "--help", "-h":
 			showUsage()
 			os.Exit(0)
@@ -189,6 +201,8 @@ func showUsage() {
 	fmt.Println(infoStyle.Render("  --heavy-concurrency N   Concurrent heavy extractions (auto if omitted)"))
 	fmt.Println(infoStyle.Render("  --workers N             Stage 2 text filter workers (default 2)"))
 	fmt.Println(infoStyle.Render("  --file-timeout-binary N Timeout in ms for binary extraction (default 1000)"))
+	fmt.Println(infoStyle.Render("  --smart-forms          Enable smart word forms (s, es, ed, ing, al, tion/ation)"))
+	fmt.Println(infoStyle.Render("  --only <type>          Search only a single file type (e.g., pdf); ignores --code"))
 	fmt.Println(infoStyle.Render("  --not ...               Tokens after this are exclusions;"))
 	fmt.Println(infoStyle.Render("                          extensions starting with '.' exclude types; others exclude words"))
 	fmt.Println(infoStyle.Render("  --help, -h              Show help"))
@@ -201,6 +215,8 @@ func showUsage() {
 	fmt.Println(infoStyle.Render("  garp contract payment agreement --distance 200"))
 	fmt.Println(infoStyle.Render("  garp mutex changed --code"))
 	fmt.Println(infoStyle.Render("  garp bank wire update --not .txt test"))
+	fmt.Println(infoStyle.Render("  garp approval chris gemini --smart-forms"))
+	fmt.Println(infoStyle.Render("  garp report earnings --only pdf"))
 	fmt.Println()
 }
 
@@ -218,6 +234,10 @@ func Run() int {
 		showUsage()
 		return 1
 	}
+	// Hook for matching layer: advertise smart-forms via environment (consumed by matching)
+	if args.SmartForms {
+		_ = os.Setenv("GARP_SMART_FORMS", "1")
+	}
 
 	// Seed model for TUI
 	m := model{
@@ -233,6 +253,7 @@ func Run() int {
 		searchWords:       args.SearchWords,
 		excludeWords:      args.ExcludeWords,
 		includeCode:       args.IncludeCode,
+		onlyType:          args.OnlyType,
 		distance:          args.Distance,
 		heavyConcurrency:  args.HeavyConcurrency,
 		fileTimeoutBinary: args.FileTimeoutBinary,

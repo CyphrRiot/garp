@@ -94,6 +94,7 @@ type model struct {
 	searchWords       []string
 	excludeWords      []string
 	includeCode       bool
+	onlyType          string
 	distance          int
 	heavyConcurrency  int
 	fileTimeoutBinary int
@@ -329,7 +330,12 @@ func (m model) View() string {
 	}
 
 	// Target description (aligned)
-	targetDesc := config.GetFileTypeDescription(m.includeCode)
+	var targetDesc string
+	if m.onlyType != "" {
+		targetDesc = "only ." + m.onlyType
+	} else {
+		targetDesc = config.GetFileTypeDescription(m.includeCode)
+	}
 	targetPrefix := "📁 Target:    "
 	targetStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
 	// Append extension excludes (e.g., .pdf) to keep header truthful, condensed with emoji
@@ -340,7 +346,7 @@ func (m model) View() string {
 		}
 	}
 	suffix := ""
-	if len(extEx) > 0 {
+	if m.onlyType == "" && len(extEx) > 0 {
 		var shown []string
 		for i, x := range extEx {
 			if i < 4 {
@@ -576,6 +582,9 @@ func (m model) View() string {
 func (m model) runSearch() tea.Cmd {
 	// Prepare engine and wire progress callback
 	fileTypes := config.BuildRipgrepFileTypes(m.includeCode)
+	if m.onlyType != "" {
+		fileTypes = []string{"-g", "*." + m.onlyType}
+	}
 	se := search.NewSearchEngineWithWorkers(
 		m.searchWords,
 		m.excludeWords,

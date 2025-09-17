@@ -23,6 +23,38 @@ import (
 // CheckTextContainsAllWords checks if extracted text contains all search words
 // in any order, within a distance window (in characters) between the earliest
 // and latest matched term positions.
+func smartFormsEnabled() bool {
+	return strings.EqualFold(os.Getenv("GARP_SMART_FORMS"), "1")
+}
+
+func buildWordRegexLower(word string) *regexp.Regexp {
+	base := strings.ToLower(strings.TrimSpace(word))
+	if base == "" {
+		// never matches; safe fallback
+		return regexp.MustCompile(`a\A`)
+	}
+	suffix := `(?:es|s)?`
+	if smartFormsEnabled() {
+		suffix = `(?:es|s|ed|ing|al|tion|ation)?`
+	}
+	pat := fmt.Sprintf(`\b(?:%s%s)\b`, regexp.QuoteMeta(base), suffix)
+	return regexp.MustCompile(pat)
+}
+
+func buildWordRegexCI(word string) *regexp.Regexp {
+	base := strings.TrimSpace(word)
+	if base == "" {
+		// never matches; safe fallback
+		return regexp.MustCompile(`a\A`)
+	}
+	suffix := `(?:es|s)?`
+	if smartFormsEnabled() {
+		suffix = `(?:es|s|ed|ing|al|tion|ation)?`
+	}
+	pat := fmt.Sprintf(`(?i)\b(?:%s%s)\b`, regexp.QuoteMeta(base), suffix)
+	return regexp.MustCompile(pat)
+}
+
 func CheckTextContainsAllWords(text string, words []string, distance int) bool {
 	if len(words) == 0 {
 		return true
@@ -32,8 +64,7 @@ func CheckTextContainsAllWords(text string, words []string, distance int) bool {
 
 	// Single-term case: just check presence quickly
 	if len(words) == 1 {
-		pattern := fmt.Sprintf(`\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(strings.ToLower(words[0])))
-		regex := regexp.MustCompile(pattern)
+		regex := buildWordRegexLower(words[0])
 		return regex.FindStringIndex(contentStr) != nil
 	}
 
@@ -44,8 +75,7 @@ func CheckTextContainsAllWords(text string, words []string, distance int) bool {
 	}
 	var matches []match
 	for i, word := range words {
-		pattern := fmt.Sprintf(`\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(strings.ToLower(word)))
-		regex := regexp.MustCompile(pattern)
+		regex := buildWordRegexLower(word)
 		indexes := regex.FindAllStringIndex(contentStr, -1)
 		for _, idx := range indexes {
 			matches = append(matches, match{pos: idx[0], wordIndex: i})
@@ -599,15 +629,14 @@ func StreamContainsAllWordsDecidedWithCap(filePath string, words []string, capBy
 	}
 	defer f.Close()
 
-	// Build plural-aware whole-word regexes (?i)\b(?:word(?:es|s)?)\b
+	// Build plural/smart-forms aware whole-word regexes
 	res := make([]*regexp.Regexp, 0, len(words))
 	for _, w := range words {
 		w = strings.TrimSpace(w)
 		if w == "" {
 			continue
 		}
-		pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
-		res = append(res, regexp.MustCompile(pat))
+		res = append(res, buildWordRegexCI(w))
 	}
 	if len(res) == 0 {
 		return true, true
@@ -761,15 +790,14 @@ func BinaryStreamingPrefilterDecided(filePath string, words []string, capBytes i
 		}
 		defer rc.Close()
 
-		// Build plural-aware whole-word regexes
+		// Build plural/smart-forms aware whole-word regexes
 		res := make([]*regexp.Regexp, 0, len(words))
 		for _, w := range words {
 			w = strings.TrimSpace(w)
 			if w == "" {
 				continue
 			}
-			pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
-			res = append(res, regexp.MustCompile(pat))
+			res = append(res, buildWordRegexCI(w))
 		}
 		if len(res) == 0 {
 			return true, true
@@ -854,15 +882,14 @@ func BinaryStreamingPrefilterDecided(filePath string, words []string, capBytes i
 			return false, false
 		}
 
-		// Build plural-aware whole-word regexes
+		// Build plural/smart-forms aware whole-word regexes
 		res := make([]*regexp.Regexp, 0, len(words))
 		for _, w := range words {
 			w = strings.TrimSpace(w)
 			if w == "" {
 				continue
 			}
-			pat := fmt.Sprintf(`(?i)\b(?:%s(?:es|s)?)\b`, regexp.QuoteMeta(w))
-			res = append(res, regexp.MustCompile(pat))
+			res = append(res, buildWordRegexCI(w))
 		}
 		if len(res) == 0 {
 			return true, true
