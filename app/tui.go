@@ -132,7 +132,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				innerWidth = 10
 			}
 			// Reserve space for header/progress/status/footer; compute budget as width*usableLines
-			usableLines := h - 12
+			usableLines := h - 13
 			if usableLines < 5 {
 				usableLines = 5
 			}
