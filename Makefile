@@ -80,7 +80,7 @@ install-pdfcpu: tidy
 	@mkdir -p ~/.local/bin
 	cp $(BINARY_PATH) ~/.local/bin/
 	@echo "Installation completed: ~/.local/bin/$(BINARY_NAME)"
-	scp ~/.local/bin/garp grendel:~/.local/bin
+
 
 # Uninstall from user's local bin directory
 uninstall:
@@ -100,7 +100,7 @@ help:
 	@echo "  dev      - Build development version with race detection"
 	@echo "  run      - Build and run with help"
 	@echo "  install  - Install to ~/.local/bin"
-	@echo "  install-pdfcpu - Build with tag 'pdfcpu' and install (also scp to grendel)"
+	@echo "  install-pdfcpu - Build with tag 'pdfcpu' and install"
 	@echo "  uninstall- Remove from ~/.local/bin"
 	@echo "  help     - Show this help"
 
