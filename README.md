@@ -135,7 +135,9 @@ Document files (default)
 - Data/Config: `.csv`, `.yaml`, `.yml`, `.cfg`, `.conf`, `.ini`, `.sh`, `.bat`
 - Email: `.eml` (MIME parsing), `.mbox` (collections of messages), `.msg` (raw content)
 - Office: `.pdf` (enabled with guardrails), `.doc`, `.docx`
-- OpenOffice: `.odt` (spreadsheets/presentations excluded by default)
+- OpenOffice: `.odt`
+- Spreadsheets/Presentations (excluded by default): `.xls`, `.xlsx`, `.ods`, `.ppt`, `.pptx`, `.odp`
+  Note: These are excluded by default to keep searches fast and safe. A future opt‑in may add minimal, capped prefilters (e.g., sharedStrings.xml for .xlsx, slide text for .pptx) as outlined in the plan.
 
 Code files (with `--code`)
 

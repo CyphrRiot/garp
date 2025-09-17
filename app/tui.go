@@ -295,19 +295,12 @@ func (m model) View() string {
 	headerLines = append(headerLines, logo)
 	headerLines = append(headerLines, "")
 
-	// Search terms (comma-separated; truncate with {...} if many)
+	// Search terms (full list, wrapped)
 	{
-		var parts []string
-		for i, w := range m.searchWords {
-			if i < 4 {
-				parts = append(parts, w)
-			}
-		}
-		if len(m.searchWords) > 4 {
-			parts = append(parts, "{...}")
-		}
-		searchLine := "🔍 Searching: " + strings.Join(parts, ", ")
-		// Append excluded non-extension words in condensed form
+		// Build full comma-separated list and wrap
+		searchLine := wrapTextWithIndent("🔍 Searching: ", strings.Join(m.searchWords, ", "), width-4)
+
+		// Append excluded non-extension words (full list)
 		var exWords []string
 		for _, w := range m.excludeWords {
 			if !strings.HasPrefix(w, ".") {
@@ -315,16 +308,7 @@ func (m model) View() string {
 			}
 		}
 		if len(exWords) > 0 {
-			var shown []string
-			for i, x := range exWords {
-				if i < 4 {
-					shown = append(shown, x)
-				}
-			}
-			if len(exWords) > 4 {
-				shown = append(shown, "{...}")
-			}
-			searchLine += "  🚫 " + strings.Join(shown, ", ")
+			searchLine += "  🚫 " + strings.Join(exWords, ", ")
 		}
 		headerLines = append(headerLines, subHeaderStyle.Render(searchLine))
 	}
