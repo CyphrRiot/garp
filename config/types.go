@@ -141,9 +141,9 @@ func ShouldSkipDirectory(dirName string) bool {
 // GetFileTypeDescription returns a human-readable description of file types
 func GetFileTypeDescription(includeCode bool) string {
 	if includeCode {
-		return "documents (txt, md, html, xml, csv, yaml, yml, eml, mbox, msg, pdf, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, rtf, log, cfg, conf, ini, sh, bat) + code files (go, js, ts, py, php, java, cpp, c, json, rs, rb, cs, swift, kt, scala)"
+		return "documents (txt, md, html, xml, csv, yaml, yml, eml, mbox, msg, pdf, doc, docx, odt, rtf, log, cfg, conf, ini, sh, bat) + code files (go, js, ts, py, php, java, cpp, c, json, rs, rb, cs, swift, kt, scala)"
 	}
-	return "documents (txt, md, html, xml, csv, yaml, yml, eml, mbox, msg, pdf, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, rtf, log, cfg, conf, ini, sh, bat)"
+	return "documents (txt, md, html, xml, csv, yaml, yml, eml, mbox, msg, pdf, doc, docx, odt, rtf, log, cfg, conf, ini, sh, bat)"
 }
 
 // BuildRipgrepFileTypes creates ripgrep file type arguments
@@ -162,9 +162,7 @@ func BuildRipgrepFileTypes(includeCode bool) []string {
 		"-g", "*.eml", "-g", "*.mbox", "-g", "*.msg",
 		// Office documents
 		"-g", "*.pdf", "-g", "*.doc", "-g", "*.docx",
-		"-g", "*.xls", "-g", "*.xlsx", "-g", "*.ppt", "-g", "*.pptx",
-		// OpenOffice
-		"-g", "*.odt", "-g", "*.ods", "-g", "*.odp",
+		"-g", "*.odt",
 		// Scripts
 		"-g", "*.sh", "-g", "*.bat", "-g", "*.cmd",
 		// Other text formats

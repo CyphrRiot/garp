@@ -214,6 +214,7 @@ func (r *ExtractorRegistry) registerBuiltIns() {
 
 	// Other
 	r.extractors["rtf"] = &RTFExtractor{}
+	r.extractors["doc"] = &DOCExtractor{}
 
 	// PDFs DISABLED: Removed PDF extractor to prevent system hangs
 	// r.extractors["pdf"] = &PDFExtractor{}
@@ -322,6 +323,100 @@ func (e *MBOXExtractor) ExtractText(data []byte) (string, error) {
 
 // PDFExtractor extracts text from .pdf files
 type PDFExtractor struct{}
+
+// DOCExtractor extracts text from legacy .doc (OLE/CFB) files using conservative salvage
+type DOCExtractor struct{}
+
+// ExtractText implements the Extractor interface for DOC files.
+// Strategy:
+// - Open OLE/CFB and read a bounded amount of likely streams (WordDocument, 1Table, 0Table)
+// - Try UTF-16 decode; else ASCII salvage replacing non-printables with spaces
+// - Collapse whitespace and return a concise plain-text representation
+func (e *DOCExtractor) ExtractText(data []byte) (string, error) {
+	// Open CFB from a byte reader
+	cf, err := mscfb.New(bytes.NewReader(data))
+	if err != nil {
+		// Fall back to crude ASCII salvage if we cannot parse CFB
+		buf := make([]rune, 0, len(data))
+		for _, b := range data {
+			if b == 0x09 || b == 0x0a || b == 0x0d || (b >= 0x20 && b <= 0x7e) {
+				buf = append(buf, rune(b))
+			} else {
+				buf = append(buf, ' ')
+			}
+		}
+		txt := strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(string(buf), " "))
+		return txt, nil
+	}
+
+	var out strings.Builder
+	const maxTotal = 2 * 1024 * 1024 // 2 MiB budget across streams
+	total := int64(0)
+	targetStreams := map[string]bool{
+		"WordDocument": true,
+		"1Table":       true,
+		"0Table":       true,
+	}
+
+	for ent, err2 := cf.Next(); err2 == nil; ent, err2 = cf.Next() {
+		if total >= maxTotal {
+			break
+		}
+		name := ent.Name
+		if !targetStreams[name] {
+			continue
+		}
+		remain := maxTotal - total
+		if remain <= 0 {
+			break
+		}
+		b, _ := io.ReadAll(io.LimitReader(ent, remain))
+		total += int64(len(b))
+		if len(b) == 0 {
+			continue
+		}
+
+		var text string
+		if s, ok := tryDecodeUTF16BestEffort(b); ok {
+			text = s
+		} else {
+			// ASCII salvage
+			buf := make([]rune, 0, len(b))
+			for _, bb := range b {
+				if bb == 0x09 || bb == 0x0a || bb == 0x0d || (bb >= 0x20 && bb <= 0x7e) {
+					buf = append(buf, rune(bb))
+				} else {
+					buf = append(buf, ' ')
+				}
+			}
+			text = string(buf)
+		}
+
+		// Normalize and append
+		text = strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(text, " "))
+		if text != "" {
+			if out.Len() > 0 {
+				out.WriteString("\n")
+			}
+			out.WriteString(text)
+		}
+	}
+
+	result := strings.TrimSpace(out.String())
+	if result == "" {
+		// last-resort fallback: plain ASCII salvage on the whole file
+		buf := make([]rune, 0, len(data))
+		for _, b := range data {
+			if b == 0x09 || b == 0x0a || b == 0x0d || (b >= 0x20 && b <= 0x7e) {
+				buf = append(buf, rune(b))
+			} else {
+				buf = append(buf, ' ')
+			}
+		}
+		result = strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(string(buf), " "))
+	}
+	return result, nil
+}
 
 // ExtractText implements the Extractor interface for PDF files
 func (e *PDFExtractor) ExtractText(data []byte) (out string, err error) {

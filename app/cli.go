@@ -1,5 +1,10 @@
 package app
 
+// TODO: Add support for --only <type> (e.g., --only pdf)
+// - CLI parsing: parse and store an "onlyType" (single extension) mutually exclusive with --code and extension excludes.
+// - Discovery: restrict file type globs to only that extension when set.
+// - UI: reflect the constraint in the "Target" header line to stay truthful.
+
 import (
 	"fmt"
 	"os"
