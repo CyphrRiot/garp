@@ -23,6 +23,11 @@ var latestProgress progressMsg
 var haveLatestProgress bool
 var progressMu sync.Mutex
 
+// Excerpt sizing should exactly match the content box to avoid layout shifts.
+// These are set during View() and read by ExcerptCharBudget.
+var lastExcerptInnerWidth int
+var lastContentHeight int
+
 // progressMsg updates the top progress line while loading.
 // Format in View: "⏳ {Stage} [num/total]: filename"
 type progressMsg struct {
@@ -121,8 +126,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Update excerpt budget to exactly fill the content box based on current window
+		// Update excerpt budget to match the actual content box height (no overflow, no layout shifts)
 		search.ExcerptCharBudget = func() int {
+			// If View() has computed the exact content box dimensions, use them directly.
+			if lastExcerptInnerWidth > 0 && lastContentHeight > 0 {
+				return lastExcerptInnerWidth * lastContentHeight
+			}
+			// Fallback: approximate until the first View() pass sets the cache.
 			w, h := m.width, m.height
 			if w <= 0 || h <= 0 {
 				return 600
@@ -131,13 +141,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if innerWidth < 10 {
 				innerWidth = 10
 			}
-			// Reserve space for header/progress/status/footer; compute budget as width*usableLines
-			usableLines := h - 13
-			if usableLines < 5 {
-				usableLines = 5
+			progressHeight := 1
+			bottomStatusHeight := 1
+			footerHeight := 1
+			chromeHeight := 4
+			// Conservative header approximation for first render; replaced once View() runs.
+			headerApprox := 10
+			contentHeight := h - headerApprox - progressHeight - bottomStatusHeight - footerHeight - chromeHeight
+			if contentHeight < 5 {
+				contentHeight = 5
 			}
-			b := innerWidth * usableLines
-			return b
+			return innerWidth * contentHeight
 		}
 		return m, nil
 
@@ -394,6 +408,8 @@ func (m model) View() string {
 	// Top progress line while loading (above the box)
 	var parts []string
 	parts = append(parts, searchInfo)
+	// Keep a blank line between Searched and Progress to match original layout
+	parts = append(parts, "")
 	if m.loading {
 		var txt string
 		if m.progressText != "" {
@@ -506,6 +522,18 @@ func (m model) View() string {
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
+	// Freeze content height on first render to keep the floating window size constant
+	if lastContentHeight <= 0 {
+		lastContentHeight = contentHeight
+	} else {
+		contentHeight = lastContentHeight
+	}
+	// Update excerpt sizing cache so budget matches the (frozen) content box size
+	innerWidthForExcerpts := (width - 4) - 6
+	if innerWidthForExcerpts < 10 {
+		innerWidthForExcerpts = 10
+	}
+	lastExcerptInnerWidth = innerWidthForExcerpts
 
 	// Window the box content according to contentScroll to enable vertical scrolling
 	lines := strings.Split(boxContent, "\n")
@@ -644,17 +672,30 @@ func (m model) runSearch() tea.Cmd {
 
 	// Provide excerpt budget callback based on inner content width
 	search.ExcerptCharBudget = func() int {
+		// Prefer exact dimensions captured during View()
+		if lastExcerptInnerWidth > 0 && lastContentHeight > 0 {
+			return lastExcerptInnerWidth * lastContentHeight
+		}
+		// Fallback approximation for very early frames
 		w := m.width
-		if w <= 0 {
+		h := m.height
+		if w <= 0 || h <= 0 {
 			return 600
 		}
 		innerWidth := (w - 4) - 6
 		if innerWidth < 10 {
 			innerWidth = 10
 		}
-		// Pre-size; will be updated precisely on WindowSizeMsg
-		b := innerWidth * 6
-		return b
+		progressHeight := 1
+		bottomStatusHeight := 1
+		footerHeight := 1
+		chromeHeight := 4
+		headerApprox := 10
+		contentHeight := h - headerApprox - progressHeight - bottomStatusHeight - footerHeight - chromeHeight
+		if contentHeight < 5 {
+			contentHeight = 5
+		}
+		return innerWidth * contentHeight
 	}
 	total := 0
 
