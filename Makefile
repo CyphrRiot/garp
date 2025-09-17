@@ -5,7 +5,7 @@ BINARY_PATH=bin/$(BINARY_NAME)
 GO_FILES=$(shell find . -name "*.go" -type f)
 
 # Version embedding
-VERSION=0.4
+VERSION=0.5
 LDFLAGS=-X find-words/app.version=$(VERSION)
 
 # Default target
@@ -69,7 +69,6 @@ install: tidy build
 	cp $(BINARY_PATH) ~/.local/bin/
 	@echo "Installation completed: ~/.local/bin/$(BINARY_NAME)"
 	@echo "Make sure ~/.local/bin is in your PATH"
-	scp ~/.local/bin/garp grendel:~/.local/bin
 
 # Install with pdfcpu build tag (opt-in)
 install-pdfcpu: tidy

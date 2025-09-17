@@ -2,7 +2,7 @@
 
 # :: garp ::
 
-![Version](https://img.shields.io/badge/version-0.4-blue?labelColor=0052cc)
+![Version](https://img.shields.io/badge/version-0.5-blue?labelColor=0052cc)
 ![License](https://img.shields.io/github/license/CyphrRiot/garp?color=4338ca&labelColor=3730a3)
 ![Platform](https://img.shields.io/badge/platform-linux-4338ca?logo=linux&logoColor=white&labelColor=3730a3)
 ![Platform](https://img.shields.io/badge/platform-windows-4338ca?logo=windows&logoColor=white&labelColor=3730a3)
@@ -27,9 +27,11 @@ garp contract payment agreement
 garp contract payment agreement --distance 200 --not .pdf
 garp mutex changed --code
 garp bank wire update --not .txt test
+garp approval chris gemini --smart-forms
+garp report earnings --only pdf
 ```
 
-ℹ️ Note: PDF handling is conservative in v0.4; improvements are ongoing.
+ℹ️ Note: PDFs are enabled with strict guardrails (concurrency=2, 250ms per‑PDF, ≤200 pages, ≤128 KiB/page).
 
 ## ✨ Key Features
 
@@ -132,8 +134,8 @@ Document files (default)
 - Web: `.html`, `.xml`
 - Data/Config: `.csv`, `.yaml`, `.yml`, `.cfg`, `.conf`, `.ini`, `.sh`, `.bat`
 - Email: `.eml` (MIME parsing), `.mbox` (collections of messages), `.msg` (raw content)
-- Office: `.pdf` (text extraction, currently disabled for stability), `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`
-- OpenOffice: `.odt`, `.ods`, `.odp`
+- Office: `.pdf` (enabled with guardrails), `.doc`, `.docx`
+- OpenOffice: `.odt` (spreadsheets/presentations excluded by default)
 
 Code files (with `--code`)
 
@@ -198,7 +200,7 @@ We keep the latest binary in `bin/garp` in this repo for convenience so users ca
 
 ## Versioning
 
-- The current version is tracked in the VERSION file (currently `0.4`).
+- The current version is tracked in the VERSION file (currently `0.5`).
 - The `garp` binary reports this version via `--version`.
 - Releases should be tagged with the same version, and the README badge updated to match.
 
