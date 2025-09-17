@@ -121,6 +121,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Update excerpt budget to exactly fill the content box based on current window
+		search.ExcerptCharBudget = func() int {
+			w, h := m.width, m.height
+			if w <= 0 || h <= 0 {
+				return 600
+			}
+			innerWidth := (w - 4) - 6
+			if innerWidth < 10 {
+				innerWidth = 10
+			}
+			// Reserve space for header/progress/status/footer; compute budget as width*usableLines
+			usableLines := h - 12
+			if usableLines < 5 {
+				usableLines = 5
+			}
+			b := innerWidth * usableLines
+			return b
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -345,7 +363,7 @@ func (m model) View() string {
 	headerLines = append(headerLines, targetStyled.Render(wrapTextWithIndent(targetPrefix, targetDesc+suffix, width-4)))
 
 	// Engine line with cores + RAM/CPU live (aligned)
-	engineContent := fmt.Sprintf("Workers %d • Heavy Threads %d%s", m.filterWorkers, m.heavyConcurrency, m.memUsageText)
+	engineContent := fmt.Sprintf("Workers %d • Concurrent %d%s", m.filterWorkers, m.heavyConcurrency, m.memUsageText)
 	enginePrefix := "⚙️ Engine:    "
 	engineStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#bb9af7"))
 	headerLines = append(headerLines, engineStyled.Render(wrapTextWithIndent(enginePrefix, engineContent, width-4)))
@@ -628,19 +646,14 @@ func (m model) runSearch() tea.Cmd {
 	search.ExcerptCharBudget = func() int {
 		w := m.width
 		if w <= 0 {
-			return 0
+			return 600
 		}
 		innerWidth := (w - 4) - 6
 		if innerWidth < 10 {
 			innerWidth = 10
 		}
-		b := innerWidth * 5
-		if b < 240 {
-			b = 240
-		}
-		if b > 600 {
-			b = 600
-		}
+		// Pre-size; will be updated precisely on WindowSizeMsg
+		b := innerWidth * 6
 		return b
 	}
 	total := 0

@@ -314,7 +314,7 @@ func FindFilesWithFirstWord(word string, fileTypes []string) ([]string, error) {
 }
 
 // FindFilesWithFirstWordProgress is like FindFilesWithFirstWord but emits per-file discovery progress.
-func FindFilesWithFirstWordProgress(words []string, fileTypes []string, onProgress func(processed, total int, path string)) ([]string, error) {
+func FindFilesWithFirstWordProgress(words []string, fileTypes []string, workers int, onProgress func(processed, total int, path string)) ([]string, error) {
 	// Parse allowed extensions from patterns like "-g", "*.txt"
 	allowed := make(map[string]bool)
 	for i := 0; i < len(fileTypes); i++ {
@@ -355,7 +355,14 @@ func FindFilesWithFirstWordProgress(words []string, fileTypes []string, onProgre
 	var mu sync.Mutex
 
 	// Bounded worker pool
-	workers := 4
+	if workers <= 0 {
+		workers = 4
+	}
+	if workers < 1 {
+		workers = 1
+	} else if workers > 16 {
+		workers = 16
+	}
 	paths := make(chan string, 1024)
 	var wg sync.WaitGroup
 

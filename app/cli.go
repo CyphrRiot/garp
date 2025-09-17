@@ -41,7 +41,7 @@ func parseArguments(args []string) *Arguments {
 		IncludeCode:       false,
 		Distance:          0,
 		HeavyConcurrency:  2,
-		FilterWorkers:     2,
+		FilterWorkers:     4,
 		FileTimeoutBinary: 1000,
 	}
 

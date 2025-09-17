@@ -236,6 +236,22 @@ garp/
 - Is it cross‑platform?
     - Yes, the implementation is pure Go and should work on Linux, macOS, and Windows terminals that support ANSI/TUI. You’ll need a compatible terminal for best results.
 
+## Troubleshooting
+
+### pdfcpu: config problem: EOF
+
+The error "pdfcpu: config problem: EOF" in pdfcpu typically occurs when the tool attempts to read its configuration file (usually config.yml located in the pdfcpu configuration directory, such as ~/.config/pdfcpu/ on Linux or %APPDATA%\pdfcpu\ on Windows) but encounters an unexpected end-of-file (EOF). This indicates the file is corrupted, truncated, or incomplete—often due to an interrupted write operation, disk error, or manual editing that left it in an invalid state.
+
+Fix (Linux):
+
+- Clear the corrupted config and retry:
+
+```bash
+rm -rf ~/.config/pdfcpu/*
+```
+
+- Re-run your garp command; pdfcpu will regenerate default configuration if needed.
+
 ## License
 
 MIT

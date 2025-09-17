@@ -195,9 +195,6 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 				if budget < 200 {
 					budget = 200
 				}
-				if budget > 800 {
-					budget = 800
-				}
 
 				span := bestR - bestL
 				buildAndReturn := func(left, right int) []string {
@@ -406,9 +403,14 @@ func ExtractMeaningfulExcerpts(content string, searchTerms []string, maxExcerpts
 	}
 
 	if len(excerpts) > 0 {
-		// Cap per-excerpt and total excerpt length to avoid overflow
-		const maxEx = 400
-		const maxTotal = 900
+		// Cap per-excerpt and total excerpt length based on UI-provided budget
+		maxEx := 400
+		if ExcerptCharBudget != nil {
+			if b := ExcerptCharBudget(); b > 0 {
+				maxEx = b
+			}
+		}
+		maxTotal := maxEx
 		total := 0
 		for i := range excerpts {
 			if len(excerpts[i]) > maxEx {

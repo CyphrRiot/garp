@@ -170,7 +170,7 @@ func (se *SearchEngine) DiscoverCandidates(fileCount int) ([]string, int, error)
 	if !se.Silent {
 		fmt.Printf("Finding files with '%s'...\n", se.SearchWords[0])
 	}
-	candidateFiles, err := FindFilesWithFirstWordProgress(se.SearchWords, se.FileTypes, func(processed, total int, path string) {
+	candidateFiles, err := FindFilesWithFirstWordProgress(se.SearchWords, se.FileTypes, se.FilterWorkers, func(processed, total int, path string) {
 		if se.OnProgress != nil {
 			se.OnProgress("discovery", processed, total, path)
 		}
