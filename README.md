@@ -137,7 +137,19 @@ Document files (default)
 - Office: `.pdf` (enabled with guardrails), `.doc`, `.docx`
 - OpenOffice: `.odt`
 - Spreadsheets/Presentations (excluded by default): `.xls`, `.xlsx`, `.ods`, `.ppt`, `.pptx`, `.odp`
-  Note: These are excluded by default to keep searches fast and safe. A future opt‑in may add minimal, capped prefilters (e.g., sharedStrings.xml for .xlsx, slide text for .pptx) as outlined in the plan.
+  Why excluded (default):
+    - Performance/safety: large ZIP-based Office containers can be heavy to parse; excluding them preserves speed and stability for typical searches.
+    - Truthfulness: we won’t scan these until an explicit opt‑in exists; the “Target” header reflects true inclusions.
+      Current behavior:
+    - These types are filtered out by default and are not scanned.
+    - This behavior cannot yet be overridden; an opt‑in with minimal, capped prefilters is planned (see Plan).
+      Usage notes:
+    - To keep searches fast: no action needed—these remain excluded by default.
+    - To exclude PDFs as well: `garp ... --not .pdf`
+    - To target a single type (example): `garp ... --only pdf`
+    - If you need spreadsheet/presentation content now, export to CSV/text or PDF and search those outputs.
+      Future (planned):
+    - Optional opt‑in with minimal, capped prefilters (e.g., sharedStrings.xml for `.xlsx`, slide text for `.pptx`), guarded to avoid false negatives or instability.
 
 Code files (with `--code`)
 
