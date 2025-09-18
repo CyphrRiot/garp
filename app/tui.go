@@ -399,7 +399,7 @@ func (m model) View() string {
 	searchInfo := strings.Join(headerLines, "\n")
 	headerHeight := strings.Count(searchInfo, "\n") + 1
 	// Account explicitly for header, progress, bottom status, and footer heights
-	progressHeight := 1 // always reserve progress line space to keep box position stable
+	progressHeight := 2 // reserve exactly two lines for progress to prevent vertical jump
 
 	bottomStatusHeight := 1 // reserve a single line for bottom status to reduce blank space
 
@@ -408,8 +408,6 @@ func (m model) View() string {
 	// Top progress line while loading (above the box)
 	var parts []string
 	parts = append(parts, searchInfo)
-	// Keep a blank line between Searched and Progress to match original layout
-	parts = append(parts, "")
 	if m.loading {
 		var txt string
 		if m.progressText != "" {
@@ -418,12 +416,25 @@ func (m model) View() string {
 		} else {
 			txt = "⏳ Progress:  "
 		}
+		// Normalize to exactly two lines to avoid vertical jump
+		linesProg := strings.Split(txt, "\n")
+		if len(linesProg) >= 2 {
+			txt = strings.Join(linesProg[:2], "\n")
+		} else {
+			txt = txt + "\n"
+		}
 		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
 		parts = append(parts, progressStyled.Render(txt))
 	} else {
-		// Show final progress summary line to keep the box fixed after completion
+		// Show final progress summary line and normalize to exactly two lines
 		progressStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
 		final := wrapTextWithIndent("⏳ Progress:  ", fmt.Sprintf("Processing [%d/%d]: All files scanned.", m.totalFiles, m.totalFiles), width-4)
+		finalLines := strings.Split(final, "\n")
+		if len(finalLines) >= 2 {
+			final = strings.Join(finalLines[:2], "\n")
+		} else {
+			final = final + "\n"
+		}
 		parts = append(parts, progressStyled.Render(final))
 	}
 
